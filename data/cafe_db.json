@@ -1854,7 +1854,8 @@
         "ord_1792485197443_u1h",
         "ord_1792729833802_xwv",
         "ord_1792743400498_oq7",
-        "ord_1792745857810_esb"
+        "ord_1792745857810_esb",
+        "ord_1792987706987_ht4"
       ],
       "billId": "bill_1792485197443"
     }
@@ -2011,6 +2012,40 @@
       "createdAt": "2026-10-23T08:57:37.810Z",
       "updatedAt": "2026-10-23T08:57:37.810Z",
       "idempotencyKey": "test_valid_tok_order_2"
+    },
+    {
+      "id": "ord_1792987706987_ht4",
+      "orderNumber": "#HQC-T01-6987",
+      "sessionId": "ses_1792485197442_160s",
+      "tableId": "T01",
+      "roundNumber": 5,
+      "items": [
+        {
+          "id": "oi_1792987706987_o5qc",
+          "cartItemId": "ci_1792987706987",
+          "menuItemId": "item_suja_shamdray",
+          "name": "SUJA-SHAMDRAY",
+          "basePrice": 180,
+          "unitPrice": 180,
+          "quantity": 2,
+          "dietType": "veg",
+          "customizations": [
+            {
+              "groupId": "grp_suja_spice",
+              "groupName": "Spice Level",
+              "optionId": "opt_mild",
+              "optionName": "Mild Flavor",
+              "priceModifier": 0
+            }
+          ],
+          "imageUrl": "/src/assets/images/dish_ema_datshi_1792466932457.jpg",
+          "kitchenStatus": "pending"
+        }
+      ],
+      "subtotal": 360,
+      "status": "submitted",
+      "createdAt": "2026-10-26T04:08:26.987Z",
+      "updatedAt": "2026-10-26T04:08:26.987Z"
     }
   ],
   "bills": [
@@ -2024,24 +2059,38 @@
         "ord_1792485197443_u1h",
         "ord_1792729833802_xwv",
         "ord_1792743400498_oq7",
-        "ord_1792745857810_esb"
+        "ord_1792745857810_esb",
+        "ord_1792987706987_ht4"
       ],
-      "subtotal": 1270,
+      "subtotal": 1630,
       "discount": null,
       "taxRate": 0.05,
-      "taxAmount": 63.5,
+      "taxAmount": 81.5,
       "serviceChargeRate": 0.1,
-      "serviceChargeAmount": 127,
+      "serviceChargeAmount": 163,
       "additionalCharges": 0,
-      "total": 1460.5,
+      "total": 1874.5,
       "paidAmount": 0,
-      "balanceDue": 1460.5,
+      "balanceDue": 1874.5,
       "status": "open",
       "payments": [],
       "createdAt": "2026-10-20T08:33:17.443Z"
     }
   ],
   "auditLogs": [
+    {
+      "id": "aud_1792987706989_u3e",
+      "action": "ORDER_PLACED",
+      "category": "order",
+      "details": "Order #HQC-T01-6987 placed for Table 1 (Round 5): 1 items, total Nu. 360",
+      "performedBy": "Guest / Customer",
+      "timestamp": "2026-10-26T04:08:26.989Z",
+      "metadata": {
+        "orderId": "ord_1792987706987_ht4",
+        "tableId": "T01",
+        "subtotal": 360
+      }
+    },
     {
       "id": "aud_1792745857814_41r",
       "action": "ORDER_PLACED",

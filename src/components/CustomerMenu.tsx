@@ -36,9 +36,8 @@ interface CustomerMenuProps {
   settings: SystemSettings;
   categories: MenuCategory[];
   menuItems: MenuItem[];
-  tables: RestaurantTable[];
-  currentTableId: string;
-  onTableChange: (tableId: string) => void;
+  verifiedTable: RestaurantTable | null;
+  attemptedTableId?: string | null;
   onSubmitOrder: (
     items: Array<{
       menuItemId: string;
@@ -53,8 +52,7 @@ interface CustomerMenuProps {
   activeOrders: OrderRound[];
   sessionOrders?: OrderRound[];
   currentTableToken?: string;
-  isTableTokenValidated?: boolean;
-  onOpenStaffLogin?: () => void;
+  isTableTokenValidated: boolean;
   onRefreshOrders?: () => void;
 }
 
@@ -62,15 +60,13 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
   settings,
   categories,
   menuItems,
-  tables,
-  currentTableId,
+  verifiedTable,
+  attemptedTableId,
   currentTableToken,
   isTableTokenValidated,
-  onTableChange,
   onSubmitOrder,
   activeOrders,
   sessionOrders,
-  onOpenStaffLogin,
   onRefreshOrders
 }) => {
   const [customerViewTab, setCustomerViewTab] = useState<'menu' | 'orders'>('menu');
@@ -92,13 +88,19 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
   const [submittedOrder, setSubmittedOrder] = useState<OrderRound | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const currentTable = tables.find(t => t.id === currentTableId) || tables[0] || { id: 'T01', tableNumber: 'Table 1', section: 'Main Hall' };
+  const canPlaceTableOrder = Boolean(
+    isTableTokenValidated && verifiedTable && currentTableToken && settings.allowGuestOrdering
+  );
 
-  // Orders for current dining session (including served rounds for history tracking)
+  const activeTableLabel = verifiedTable ? verifiedTable.tableNumber : 'Guest Menu';
+  const activeTableSection = verifiedTable ? verifiedTable.section : 'Scan Table QR to Order';
+
+  // Orders for current verified dining session ONLY
   const tableSessionOrders = useMemo(() => {
+    if (!isTableTokenValidated || !verifiedTable) return [];
     if (sessionOrders && sessionOrders.length > 0) return sessionOrders;
     return activeOrders;
-  }, [sessionOrders, activeOrders]);
+  }, [isTableTokenValidated, verifiedTable, sessionOrders, activeOrders]);
 
   const activeCookingCount = useMemo(() => {
     return tableSessionOrders.filter(o => o.status !== 'served' && o.status !== 'cancelled').length;
@@ -228,15 +230,19 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
   const cartTotal = Math.round((cartSubtotal + serviceCharge + salesTax) * 100) / 100;
   const totalCartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
-  // Submit Order with idempotency key
+  // Submit Order with idempotency key and verified QR token
   const handleConfirmOrder = async () => {
     if (cart.length === 0 || isSubmitting) return;
+    if (!canPlaceTableOrder || !verifiedTable || !currentTableToken) {
+      setSubmitError('Please scan the official QR code on your café table to place an order.');
+      return;
+    }
 
     try {
       setIsSubmitting(true);
       setSubmitError(null);
 
-      const idempotencyKey = `idemp_${currentTable.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const idempotencyKey = `idemp_${verifiedTable.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
       const orderItemsPayload = cart.map(item => ({
         menuItemId: item.menuItemId,
         quantity: item.quantity,
@@ -247,8 +253,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
         specialInstructions: item.specialInstructions
       }));
 
-      const tokenToSubmit = currentTableToken || currentTable.tableToken;
-      const res = await onSubmitOrder(orderItemsPayload, customerNote, idempotencyKey, tokenToSubmit);
+      const res = await onSubmitOrder(orderItemsPayload, customerNote, idempotencyKey, currentTableToken);
       setSubmittedOrder(res.order);
       setCart([]);
       setIsCartOpen(false);
@@ -267,40 +272,28 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
         <div className="max-w-7xl mx-auto px-3.5 sm:px-6 py-4 sm:py-6 md:py-8">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-center">
             <div className="lg:col-span-8 space-y-2.5 sm:space-y-3">
-              {/* Table Identity Header */}
+              {/* Verified Table Identity (No Table Switcher / No Spoofing) */}
               <div className="flex flex-wrap items-center gap-2 text-xs">
-                {currentTableToken || isTableTokenValidated ? (
-                  <div className="flex items-center gap-1.5 sm:gap-2 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-2.5 sm:px-3 py-1 rounded-lg">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                {isTableTokenValidated && verifiedTable ? (
+                  <div className="inline-flex flex-wrap items-center gap-1.5 sm:gap-2 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-3 py-1 rounded-lg">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                     <span className="font-extrabold font-display text-xs sm:text-sm tracking-wide text-white">
-                      {currentTable.tableNumber}
+                      {verifiedTable.tableNumber}
                     </span>
-                    <span className="text-stone-300">({currentTable.section})</span>
-                    <span className="bg-emerald-500/20 text-emerald-200 text-[10px] px-1.5 py-0.5 rounded font-mono uppercase font-bold tracking-wider">
-                      Verified QR Table
+                    <span className="text-stone-300">· {verifiedTable.section}</span>
+                  </div>
+                ) : attemptedTableId ? (
+                  <div className="inline-flex items-center gap-2 bg-rose-500/15 border border-rose-500/40 text-rose-200 px-3 py-1.5 rounded-lg">
+                    <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                    <span>
+                      Unverified link for <strong>{attemptedTableId}</strong> — Scan your table&apos;s QR code to order
                     </span>
                   </div>
                 ) : (
-                  <>
-                    <span className="bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-md font-semibold font-mono text-xs">
-                      {currentTable.tableNumber.toUpperCase()}
-                    </span>
-                    <span className="text-stone-400 text-xs">
-                      {currentTable.section} · Demo Preview
-                    </span>
-                    {/* Demo quick table selector */}
-                    <select
-                      value={currentTableId}
-                      onChange={(e) => onTableChange(e.target.value)}
-                      className="bg-stone-800 border border-stone-700 text-stone-200 text-xs rounded-md px-2 py-1 focus:ring-1 focus:ring-amber-500 outline-none"
-                    >
-                      {tables.map(t => (
-                        <option key={t.id} value={t.id}>
-                          {t.tableNumber} ({t.section})
-                        </option>
-                      ))}
-                    </select>
-                  </>
+                  <div className="inline-flex items-center gap-2 text-stone-300 text-xs">
+                    <Utensils className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span>Browse Menu · Scan your table&apos;s QR code when seated to place an order</span>
+                  </div>
                 )}
               </div>
 
@@ -359,59 +352,60 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
         </div>
       </section>
 
-      {/* Primary Customer Tab Bar: Browse Menu vs Previous Orders (Sticky under Navbar) */}
-      <nav aria-label="Customer Navigation" className="bg-stone-900 border-b border-stone-800 sticky top-14 sm:top-16 z-30 shadow-md">
-        <div className="max-w-7xl mx-auto px-2 sm:px-6">
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setCustomerViewTab('menu')}
-              className={`flex-1 flex items-center justify-center gap-1.5 sm:gap-2 py-3 px-2 sm:px-4 text-xs font-semibold border-b-2 transition-all cursor-pointer min-h-[44px] ${
-                customerViewTab === 'menu'
-                  ? 'border-amber-400 text-amber-300 bg-stone-800/60'
-                  : 'border-transparent text-stone-400 hover:text-stone-200 hover:bg-stone-800/30'
-              }`}
-            >
-              <Utensils className="w-4 h-4 shrink-0" />
-              <span>Browse Menu</span>
-            </button>
+      {/* Primary Customer Tab Bar (Shown when a verified table QR is active) */}
+      {isTableTokenValidated && verifiedTable && (
+        <nav aria-label="Customer Navigation" className="bg-stone-900 border-b border-stone-800 sticky top-14 sm:top-16 z-30 shadow-md">
+          <div className="max-w-7xl mx-auto px-2 sm:px-6">
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setCustomerViewTab('menu')}
+                className={`flex-1 flex items-center justify-center gap-1.5 sm:gap-2 py-3 px-2 sm:px-4 text-xs font-semibold border-b-2 transition-all cursor-pointer min-h-[44px] ${
+                  customerViewTab === 'menu'
+                    ? 'border-amber-400 text-amber-300 bg-stone-800/60'
+                    : 'border-transparent text-stone-400 hover:text-stone-200 hover:bg-stone-800/30'
+                }`}
+              >
+                <Utensils className="w-4 h-4 shrink-0" />
+                <span>Browse Menu</span>
+              </button>
 
-            <button
-              onClick={() => setCustomerViewTab('orders')}
-              className={`flex-1 flex items-center justify-center gap-1.5 sm:gap-2 py-3 px-2 sm:px-4 text-xs font-semibold border-b-2 transition-all cursor-pointer min-h-[44px] ${
-                customerViewTab === 'orders'
-                  ? 'border-amber-400 text-amber-300 bg-stone-800/60'
-                  : 'border-transparent text-stone-400 hover:text-stone-200 hover:bg-stone-800/30'
-              }`}
-            >
-              <History className="w-4 h-4 shrink-0" />
-              <span>Previous Orders</span>
-              {tableSessionOrders.length > 0 && (
-                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-                  activeCookingCount > 0
-                    ? 'bg-amber-500 text-stone-950 animate-pulse'
-                    : 'bg-stone-800 text-stone-300 border border-stone-700'
-                }`}>
-                  {tableSessionOrders.length}
-                </span>
-              )}
-            </button>
+              <button
+                onClick={() => setCustomerViewTab('orders')}
+                className={`flex-1 flex items-center justify-center gap-1.5 sm:gap-2 py-3 px-2 sm:px-4 text-xs font-semibold border-b-2 transition-all cursor-pointer min-h-[44px] ${
+                  customerViewTab === 'orders'
+                    ? 'border-amber-400 text-amber-300 bg-stone-800/60'
+                    : 'border-transparent text-stone-400 hover:text-stone-200 hover:bg-stone-800/30'
+                }`}
+              >
+                <History className="w-4 h-4 shrink-0" />
+                <span>My Table Orders</span>
+                {tableSessionOrders.length > 0 && (
+                  <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                    activeCookingCount > 0
+                      ? 'bg-amber-500 text-stone-950'
+                      : 'bg-stone-800 text-stone-300 border border-stone-700'
+                  }`}>
+                    {tableSessionOrders.length}
+                  </span>
+                )}
+              </button>
+            </div>
           </div>
-        </div>
-      </nav>
+        </nav>
+      )}
 
       {/* Active Orders Visual Progress Tracker Bar on Menu Page */}
-      {activeOrders.length > 0 && customerViewTab === 'menu' && (
+      {isTableTokenValidated && verifiedTable && activeOrders.length > 0 && customerViewTab === 'menu' && (
         <section className="bg-stone-900 border-b border-stone-800 py-3 px-4 sm:px-6">
           <div className="max-w-7xl mx-auto space-y-2.5">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2 text-amber-200">
-                <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
                 <span className="font-semibold">
-                  <strong>{currentTable.tableNumber}</strong> — Active Order ({activeOrders[0].orderNumber})
+                  <strong>{verifiedTable.tableNumber}</strong> — Active Order ({activeOrders[0].orderNumber})
                 </span>
                 {activeOrders.length > 1 && (
-                  <span className="bg-stone-800 text-stone-300 border border-stone-700 px-2 py-0.5 rounded-full text-[10px]">
-                    +{activeOrders.length - 1} more rounds
+                  <span className="text-stone-400 text-[11px]">
+                    · +{activeOrders.length - 1} more rounds
                   </span>
                 )}
               </div>
@@ -423,7 +417,6 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
               </button>
             </div>
 
-            {/* Visual Progress Tracker: Placed -> Preparing -> Ready */}
             <OrderStatusTracker
               status={activeOrders[0].status}
               orderNumber={activeOrders[0].orderNumber}
@@ -433,9 +426,9 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
         </section>
       )}
 
-      {customerViewTab === 'orders' ? (
+      {isTableTokenValidated && verifiedTable && customerViewTab === 'orders' ? (
         <PreviousOrdersView
-          currentTable={currentTable}
+          currentTable={verifiedTable}
           orders={tableSessionOrders}
           settings={settings}
           onOrderMore={() => setCustomerViewTab('menu')}
@@ -443,8 +436,8 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
         />
       ) : (
         <>
-          {/* Category Tabs, Search & Filters (Sticky under Tab switcher) */}
-          <section className="sticky top-[102px] sm:top-[112px] z-20 bg-white/95 backdrop-blur-md border-b border-stone-200 shadow-xs">
+          {/* Category Tabs, Search & Filters */}
+          <section className={`sticky ${isTableTokenValidated && verifiedTable ? 'top-[102px] sm:top-[112px]' : 'top-14 sm:top-16'} z-20 bg-white/95 backdrop-blur-md border-b border-stone-200 shadow-xs`}>
             <div className="max-w-7xl mx-auto px-3.5 sm:px-6 py-2.5 sm:py-3 space-y-2.5 sm:space-y-3">
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 sm:gap-3">
                 {/* Category horizontal scroll with touch momentum */}
@@ -657,16 +650,22 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
         </>
       )}
 
-      {/* Customer Footer */}
+      {/* Isolated Customer Footer (Zero Staff or Admin Links) */}
       <footer className="mt-16 border-t border-stone-200 py-10 bg-white text-stone-500 text-xs text-center space-y-3 px-4">
         <div className="max-w-md mx-auto space-y-1">
           <p className="font-bold text-stone-800 text-sm font-display">{settings.restaurantName}</p>
           <p className="text-[11px] text-stone-500">{settings.tagline || 'Paro, Bhutan · Open 24/7'}</p>
-          <p className="text-[11px] text-stone-400">Order from your phone · Prepared fresh upon request</p>
+          <p className="text-[11px] text-stone-400">{settings.address}</p>
         </div>
 
-        <div className="pt-4 flex flex-wrap items-center justify-center gap-4 text-[11px]">
-          <span className="text-stone-400">Connected to: <strong>{currentTable.tableNumber}</strong></span>
+        <div className="pt-3 flex flex-wrap items-center justify-center gap-3 text-[11px]">
+          {isTableTokenValidated && verifiedTable ? (
+            <span className="text-stone-500">
+              Ordering for <strong>{verifiedTable.tableNumber}</strong> ({verifiedTable.section})
+            </span>
+          ) : (
+            <span className="text-stone-400">Scan your table&apos;s QR code to place an order</span>
+          )}
           <span>·</span>
           <a
             href="/assets/aistudio/paro_menu_final__Recovered__13981981.pdf"
@@ -676,13 +675,6 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
           >
             Official Printed PDF Menu
           </a>
-          <span>·</span>
-          <button
-            onClick={onOpenStaffLogin}
-            className="hover:text-stone-900 underline font-semibold text-stone-500"
-          >
-            Staff Portal Login
-          </button>
         </div>
       </footer>
       {cart.length > 0 && (
@@ -696,7 +688,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                 </span>
               </div>
               <div className="min-w-0">
-                <div className="text-[11px] sm:text-xs text-stone-500 truncate">{currentTable.tableNumber} Order Cart</div>
+                <div className="text-[11px] sm:text-xs text-stone-500 truncate">{activeTableLabel} Order Cart</div>
                 {settings.showPricesOnCustomerMenu ? (
                   <div className="text-sm sm:text-base font-extrabold text-stone-900 tabular-nums">
                     Nu. {cartTotal}{' '}
@@ -904,7 +896,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                   Your Table Order
                 </h2>
                 <p className="text-xs text-stone-500">
-                  {currentTable.tableNumber} · {currentTable.section}
+                  {activeTableLabel} · {activeTableSection}
                 </p>
               </div>
               <button
@@ -1036,6 +1028,17 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                 </div>
               )}
 
+              {!canPlaceTableOrder && (
+                <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 text-xs rounded-xl flex items-start gap-2">
+                  <Info className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                  <span>
+                    {!settings.allowGuestOrdering
+                      ? 'Self-ordering is temporarily paused. Please place your order with café staff.'
+                      : 'Scan the official QR code on your café table with your phone camera to link your table and submit this order.'}
+                  </span>
+                </div>
+              )}
+
               {submitError && (
                 <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -1048,20 +1051,22 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
             <div className="p-4 sm:p-5 border-t border-stone-200 bg-stone-50 space-y-2 pb-safe">
               <button
                 onClick={handleConfirmOrder}
-                disabled={isSubmitting || cart.length === 0}
-                className={`w-full py-3.5 px-4 rounded-xl text-xs sm:text-sm font-bold text-white shadow-md transition-all flex items-center justify-center gap-2 min-h-[48px] active:scale-[0.98] cursor-pointer ${
-                  isSubmitting
-                    ? 'bg-stone-400 cursor-wait'
-                    : 'bg-emerald-600 hover:bg-emerald-700'
+                disabled={isSubmitting || cart.length === 0 || !canPlaceTableOrder}
+                className={`w-full py-3.5 px-4 rounded-xl text-xs sm:text-sm font-bold text-white shadow-md transition-all flex items-center justify-center gap-2 min-h-[48px] ${
+                  isSubmitting || !canPlaceTableOrder
+                    ? 'bg-stone-400 cursor-not-allowed'
+                    : 'bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] cursor-pointer'
                 }`}
               >
                 {isSubmitting ? (
                   <span>Sending Order to Kitchen...</span>
-                ) : (
+                ) : canPlaceTableOrder && verifiedTable ? (
                   <>
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>Confirm & Send Order ({currentTable.tableNumber})</span>
+                    <span>Confirm &amp; Send Order ({verifiedTable.tableNumber})</span>
                   </>
+                ) : (
+                  <span>Scan Table QR Code to Order</span>
                 )}
               </button>
               <p className="text-[11px] text-center text-stone-500">
@@ -1087,7 +1092,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                 {submittedOrder.orderNumber}
               </h2>
               <p className="text-xs text-stone-500">
-                Linked to <strong>{currentTable.tableNumber}</strong> ({currentTable.section}) · Round #{submittedOrder.roundNumber}
+                Linked to <strong>{activeTableLabel}</strong> ({activeTableSection}) · Round #{submittedOrder.roundNumber}
               </p>
             </div>
 

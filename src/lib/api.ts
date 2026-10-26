@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import {
   MenuItem,
   MenuCategory,
@@ -40,11 +40,16 @@ export function clearStoredAuth() {
   localStorage.removeItem(USER_KEY);
 }
 
-async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const token = getStoredToken();
+interface RequestOptions extends RequestInit {
+  skipStaffAuth?: boolean;
+}
+
+async function request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+  const { skipStaffAuth = false, ...fetchOptions } = options;
+  const token = skipStaffAuth ? null : getStoredToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string>),
+    ...(fetchOptions.headers as Record<string, string>),
   };
 
   if (token) {
@@ -52,7 +57,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   }
 
   const res = await fetch(endpoint, {
-    ...options,
+    ...fetchOptions,
     headers,
   });
 
@@ -66,9 +71,59 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 }
 
 export const api = {
-  // Public
-  getMenu: () => request<{ settings: SystemSettings; categories: MenuCategory[]; menuItems: MenuItem[] }>('/api/menu'),
-  getTable: (tableId: string) => request<{ table: RestaurantTable; activeSession: DiningSession | null }>(`/api/tables/${tableId}`),
+  // ==========================================
+  // ISOLATED GUEST-ONLY ENDPOINTS (Zero Staff Privileges)
+  // ==========================================
+  getGuestMenu: () =>
+    request<{ settings: SystemSettings; categories: MenuCategory[]; menuItems: MenuItem[] }>('/api/menu', {
+      skipStaffAuth: true
+    }),
+
+  getTableVerification: (tableId: string, token?: string) =>
+    request<{
+      table: RestaurantTable;
+      isTokenValid: boolean;
+      hasTokenConfigured: boolean;
+      activeSession: DiningSession | null;
+    }>(`/api/tables/${encodeURIComponent(tableId)}${token ? `?token=${encodeURIComponent(token)}` : ''}`, {
+      skipStaffAuth: true
+    }),
+
+  getGuestTableOrders: (tableId: string, token: string) =>
+    request<{ session: DiningSession | null; rounds: OrderRound[]; bill: Bill | null }>(
+      `/api/tables/${encodeURIComponent(tableId)}/orders?token=${encodeURIComponent(token)}`,
+      { skipStaffAuth: true }
+    ),
+
+  createGuestOrder: (payload: {
+    tableId: string;
+    tableToken: string;
+    items: Array<{
+      menuItemId: string;
+      quantity: number;
+      selectedCustomizations?: Array<{ groupId: string; optionId: string }>;
+      specialInstructions?: string;
+    }>;
+    customerNote?: string;
+    idempotencyKey?: string;
+  }) =>
+    request<{ success: boolean; order: OrderRound; bill: Bill; message: string }>('/api/orders', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      skipStaffAuth: true
+    }),
+
+  // ==========================================
+  // GENERAL / STAFF-AWARE ENDPOINTS
+  // ==========================================
+  getMenu: () =>
+    request<{ settings: SystemSettings; categories: MenuCategory[]; menuItems: MenuItem[] }>('/api/menu'),
+
+  getTable: (tableId: string, token?: string) =>
+    request<{ table: RestaurantTable; activeSession: DiningSession | null }>(
+      `/api/tables/${encodeURIComponent(tableId)}${token ? `?token=${encodeURIComponent(token)}` : ''}`
+    ),
+
   createOrder: (payload: {
     tableId: string;
     tableToken?: string;
@@ -80,24 +135,39 @@ export const api = {
     }>;
     customerNote?: string;
     idempotencyKey?: string;
-  }) => request<{ success: boolean; order: OrderRound; bill: Bill; message: string }>('/api/orders', {
-    method: 'POST',
-    body: JSON.stringify(payload)
-  }),
-  getTableVerification: (tableId: string, token?: string) =>
-    request<{ table: RestaurantTable; isTokenValid: boolean; hasTokenConfigured: boolean; activeSession: any }>(
-      `/api/tables/${tableId}${token ? `?token=${encodeURIComponent(token)}` : ''}`
+  }) =>
+    request<{ success: boolean; order: OrderRound; bill: Bill; message: string }>('/api/orders', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  getOrder: (id: string, token?: string) =>
+    request<OrderRound>(`/api/orders/${encodeURIComponent(id)}${token ? `?token=${encodeURIComponent(token)}` : ''}`),
+
+  getSession: (id: string, token?: string) =>
+    request<{ session: DiningSession; rounds: OrderRound[]; bill: Bill | null }>(
+      `/api/session/${encodeURIComponent(id)}${token ? `?token=${encodeURIComponent(token)}` : ''}`
     ),
-  getOrder: (id: string) => request<OrderRound>(`/api/orders/${id}`),
-  getSession: (id: string) => request<{ session: DiningSession; rounds: OrderRound[]; bill: Bill | null }>(`/api/session/${id}`),
-  getTableOrders: (tableId: string) => request<{ session: DiningSession | null; rounds: OrderRound[]; bill: Bill | null }>(`/api/tables/${tableId}/orders`),
+
+  getTableOrders: (tableId: string, token?: string) =>
+    request<{ session: DiningSession | null; rounds: OrderRound[]; bill: Bill | null }>(
+      `/api/tables/${encodeURIComponent(tableId)}/orders${token ? `?token=${encodeURIComponent(token)}` : ''}`
+    ),
 
   // Auth
-  login: (credential: string) => request<{ success: boolean; token: string; user: StaffUser }>('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ credential })
-  }),
-  getDemoStaffAccounts: () => request<StaffUser[]>('/api/auth/staff-accounts'),
+  login: (input: string | { username?: string; pin: string }) => {
+    const body = typeof input === 'string' ? { credential: input } : input;
+    return request<{ success: boolean; token: string; user: StaffUser }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      skipStaffAuth: true
+    });
+  },
+  logout: () =>
+    request<{ success: boolean }>('/api/auth/logout', {
+      method: 'POST'
+    }),
+  getStaffAccounts: () => request<StaffUser[]>('/api/auth/staff-accounts'),
   getMe: () => request<StaffUser>('/api/auth/me'),
 
   // Kitchen
@@ -121,17 +191,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(discount)
     }),
-  removeDiscount: (billId: string) => request<{ success: boolean; bill: Bill }>(`/api/counter/bills/${billId}/discount`, {
-    method: 'DELETE'
-  }),
+  removeDiscount: (billId: string) =>
+    request<{ success: boolean; bill: Bill }>(`/api/counter/bills/${billId}/discount`, {
+      method: 'DELETE'
+    }),
   recordPayment: (billId: string, payment: { method: PaymentMethod; amount: number; reference?: string }) =>
     request<{ success: boolean; bill: Bill; payment: any; message: string }>(`/api/counter/bills/${billId}/payment`, {
       method: 'POST',
       body: JSON.stringify(payment)
     }),
-  closeSession: (sessionId: string) => request<{ success: boolean; session: DiningSession; message: string }>(`/api/counter/sessions/${sessionId}/close`, {
-    method: 'POST'
-  }),
+  closeSession: (sessionId: string) =>
+    request<{ success: boolean; session: DiningSession; message: string }>(`/api/counter/sessions/${sessionId}/close`, {
+      method: 'POST'
+    }),
   moveSession: (sessionId: string, targetTableId: string) =>
     request<{ success: boolean; session: DiningSession; message: string }>(`/api/counter/sessions/${sessionId}/move`, {
       method: 'POST',
@@ -161,9 +233,10 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ isAvailable, soldOut })
     }),
-  deleteMenuItem: (id: string) => request<{ success: boolean; message: string }>(`/api/admin/menu/${id}`, {
-    method: 'DELETE'
-  }),
+  deleteMenuItem: (id: string) =>
+    request<{ success: boolean; message: string }>(`/api/admin/menu/${id}`, {
+      method: 'DELETE'
+    }),
   getTablesWithQR: () => request<Array<RestaurantTable & { qrUrl: string; qrCodeDataUrl: string }>>('/api/admin/tables-with-qr'),
   saveAdminTable: (table: Partial<RestaurantTable>) => {
     if (table.id && !table.id.startsWith('new_')) {
@@ -177,15 +250,18 @@ export const api = {
       body: JSON.stringify(table)
     });
   },
-  deleteAdminTable: (id: string) => request<{ success: boolean; message: string }>(`/api/admin/tables/${id}`, {
-    method: 'DELETE'
-  }),
-  regenerateTableToken: (tableId: string) => request<{ success: boolean; table: RestaurantTable }>(`/api/admin/tables/${tableId}/regenerate-token`, {
-    method: 'POST'
-  }),
-  regenerateAllTableTokens: () => request<{ success: boolean; tables: RestaurantTable[] }>('/api/admin/tables/regenerate-all-tokens', {
-    method: 'POST'
-  }),
+  deleteAdminTable: (id: string) =>
+    request<{ success: boolean; message: string }>(`/api/admin/tables/${id}`, {
+      method: 'DELETE'
+    }),
+  regenerateTableToken: (tableId: string) =>
+    request<{ success: boolean; table: RestaurantTable }>(`/api/admin/tables/${tableId}/regenerate-token`, {
+      method: 'POST'
+    }),
+  regenerateAllTableTokens: () =>
+    request<{ success: boolean; tables: RestaurantTable[] }>('/api/admin/tables/regenerate-all-tokens', {
+      method: 'POST'
+    }),
 
   // Staff accounts management (Admin only)
   getAdminStaff: () => request<StaffUser[]>('/api/admin/staff'),
@@ -201,22 +277,24 @@ export const api = {
       body: JSON.stringify(user)
     });
   },
-  deleteAdminStaff: (id: string) => request<{ success: boolean; message: string }>(`/api/admin/staff/${id}`, {
-    method: 'DELETE'
-  }),
+  deleteAdminStaff: (id: string) =>
+    request<{ success: boolean; message: string }>(`/api/admin/staff/${id}`, {
+      method: 'DELETE'
+    }),
 
-  getReports: () => request<{
-    summary: {
-      totalOrders: number;
-      totalCollectedSales: number;
-      totalOutstandingBalance: number;
-      totalDiscountsGiven: number;
-      paidBillsCount: number;
-      openBillsCount: number;
-    };
-    popularDishes: Array<{ id: string; name: string; quantity: number; revenue: number }>;
-    categoryBreakdown: Array<{ categoryId: string; categoryName: string; revenue: number }>;
-  }>('/api/admin/reports'),
+  getReports: () =>
+    request<{
+      summary: {
+        totalOrders: number;
+        totalCollectedSales: number;
+        totalOutstandingBalance: number;
+        totalDiscountsGiven: number;
+        paidBillsCount: number;
+        openBillsCount: number;
+      };
+      popularDishes: Array<{ id: string; name: string; quantity: number; revenue: number }>;
+      categoryBreakdown: Array<{ categoryId: string; categoryName: string; revenue: number }>;
+    }>('/api/admin/reports'),
   getAuditLogs: () => request<{ generalLogs: any[]; priceLogs: any[] }>('/api/admin/audit-logs'),
   updateSettings: (updates: Partial<SystemSettings>) =>
     request<{ success: boolean; settings: SystemSettings }>('/api/admin/settings', {
@@ -226,18 +304,46 @@ export const api = {
 };
 
 /**
- * Hook to listen to real-time events via Server-Sent Events (SSE)
+ * Scoped real-time SSE hook — strictly separates Guest vs. Authenticated Staff streams
  */
-export function useRealTimeEvents(onEvent?: (event: string, data: any) => void) {
+export function useRealTimeEvents(
+  onEvent?: (event: string, data: any) => void,
+  options: {
+    scope: 'guest' | 'staff' | 'disabled';
+    staffToken?: string | null;
+    tableId?: string | null;
+    tableToken?: string | null;
+  } = { scope: 'guest' }
+) {
   const [isConnected, setIsConnected] = useState(false);
+  const { scope, staffToken, tableId, tableToken } = options;
 
   useEffect(() => {
+    if (scope === 'disabled') {
+      setIsConnected(false);
+      return;
+    }
+    if (scope === 'staff' && !staffToken) {
+      setIsConnected(false);
+      return;
+    }
+
     let eventSource: EventSource | null = null;
-    let reconnectTimeout: any = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const params = new URLSearchParams();
+    if (scope === 'staff' && staffToken) {
+      params.set('staffToken', staffToken);
+    } else if (scope === 'guest' && tableId && tableToken) {
+      params.set('tableId', tableId);
+      params.set('tableToken', tableToken);
+    }
+    const queryStr = params.toString();
+    const url = `/api/events${queryStr ? `?${queryStr}` : ''}`;
 
     const connect = () => {
       try {
-        eventSource = new EventSource('/api/events');
+        eventSource = new EventSource(url);
 
         eventSource.onopen = () => {
           setIsConnected(true);
@@ -251,9 +357,12 @@ export function useRealTimeEvents(onEvent?: (event: string, data: any) => void) 
           'payment_recorded',
           'table_closed',
           'table_moved',
+          'tables_updated',
+          'table_deleted',
           'menu_updated',
           'menu_availability_changed',
-          'menu_item_deleted'
+          'menu_item_deleted',
+          'settings_updated'
         ];
 
         eventNames.forEach(name => {
@@ -272,7 +381,7 @@ export function useRealTimeEvents(onEvent?: (event: string, data: any) => void) 
           eventSource?.close();
           reconnectTimeout = setTimeout(connect, 3000);
         };
-      } catch (err) {
+      } catch {
         setIsConnected(false);
         reconnectTimeout = setTimeout(connect, 3000);
       }
@@ -284,7 +393,7 @@ export function useRealTimeEvents(onEvent?: (event: string, data: any) => void) 
       if (eventSource) eventSource.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
-  }, [onEvent]);
+  }, [onEvent, scope, staffToken, tableId, tableToken]);
 
   return { isConnected };
 }

@@ -172,11 +172,9 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
   // Delete table
   const handleDeleteTable = async (table: TableWithQR) => {
     if (table.status === 'occupied') {
-      alert(`Cannot delete ${table.tableNumber} because it currently has an active dining session.`);
+      showNotification('error', `Cannot delete ${table.tableNumber} because it currently has an active dining session.`);
       return;
     }
-    const confirmed = window.confirm(`Are you sure you want to delete ${table.tableNumber}? Its QR code will stop functioning.`);
-    if (!confirmed) return;
 
     try {
       await api.deleteAdminTable(table.id);

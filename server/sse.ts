@@ -1,11 +1,13 @@
 import { Response } from 'express';
+import { Role } from '../src/types/index.ts';
 
-interface SSEClient {
+export interface SSEClient {
   id: string;
   res: Response;
-  role?: string; // 'kitchen' | 'counter' | 'admin' | 'customer'
-  tableId?: string;
-  sessionId?: string;
+  isStaff: boolean;
+  staffRole?: Role;
+  isVerifiedTableGuest: boolean;
+  verifiedTableId?: string;
 }
 
 class SSEHub {
@@ -14,29 +16,42 @@ class SSEHub {
   constructor() {
     // Keepalive ping every 25 seconds
     setInterval(() => {
-      this.broadcast('ping', { timestamp: Date.now() });
+      this.broadcastPublic('ping', { timestamp: Date.now() });
     }, 25000);
   }
 
-  addClient(id: string, res: Response, options: { role?: string; tableId?: string; sessionId?: string } = {}) {
+  addClient(
+    id: string,
+    res: Response,
+    options: {
+      isStaff?: boolean;
+      staffRole?: Role;
+      isVerifiedTableGuest?: boolean;
+      verifiedTableId?: string;
+    } = {}
+  ) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no'); // Disable buffering for NGINX/proxies
+    res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
     const client: SSEClient = {
       id,
       res,
-      role: options.role,
-      tableId: options.tableId,
-      sessionId: options.sessionId
+      isStaff: Boolean(options.isStaff),
+      staffRole: options.staffRole,
+      isVerifiedTableGuest: Boolean(options.isVerifiedTableGuest),
+      verifiedTableId: options.verifiedTableId
     };
 
     this.clients.set(id, client);
 
-    // Send initial handshake
-    this.sendToClient(id, 'connected', { clientId: id, timestamp: Date.now() });
+    this.sendToClient(id, 'connected', {
+      clientId: id,
+      scope: client.isStaff ? 'staff' : client.isVerifiedTableGuest ? 'table_guest' : 'public_menu',
+      timestamp: Date.now()
+    });
 
     res.on('close', () => {
       this.clients.delete(id);
@@ -48,21 +63,60 @@ class SSEHub {
     if (client) {
       try {
         client.res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-      } catch (err) {
+      } catch {
         this.clients.delete(clientId);
       }
     }
   }
 
-  broadcast(event: string, data: any, filter?: (client: SSEClient) => boolean) {
+  /**
+   * Broadcast strictly public menu/catalog updates to all connected clients
+   */
+  broadcastPublic(event: string, data: any) {
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const [id, client] of this.clients.entries()) {
-      if (!filter || filter(client)) {
-        try {
-          client.res.write(payload);
-        } catch (err) {
-          this.clients.delete(id);
+      try {
+        client.res.write(payload);
+      } catch {
+        this.clients.delete(id);
+      }
+    }
+  }
+
+  /**
+   * Broadcast strictly to authenticated staff (optionally restricted by role)
+   */
+  broadcastToStaff(event: string, data: any, allowedRoles?: Role[]) {
+    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    for (const [id, client] of this.clients.entries()) {
+      if (!client.isStaff) continue;
+      if (allowedRoles && client.staffRole && client.staffRole !== 'admin' && !allowedRoles.includes(client.staffRole)) {
+        continue;
+      }
+      try {
+        client.res.write(payload);
+      } catch {
+        this.clients.delete(id);
+      }
+    }
+  }
+
+  /**
+   * Broadcast full operational payload to staff, and strictly table-scoped sanitized payload ONLY to verified guests at that specific table
+   */
+  broadcastToTableAndStaff(tableId: string, event: string, staffData: any, guestData: any) {
+    const staffPayload = `event: ${event}\ndata: ${JSON.stringify(staffData)}\n\n`;
+    const guestPayload = `event: ${event}\ndata: ${JSON.stringify(guestData)}\n\n`;
+
+    for (const [id, client] of this.clients.entries()) {
+      try {
+        if (client.isStaff) {
+          client.res.write(staffPayload);
+        } else if (client.isVerifiedTableGuest && client.verifiedTableId === tableId) {
+          client.res.write(guestPayload);
         }
+      } catch {
+        this.clients.delete(id);
       }
     }
   }

@@ -175,16 +175,37 @@ class CafeDatabase {
     return this.data.staffUsers.map(u => ({ ...u, pin: '••••' }));
   }
 
+  getStaffUserById(id: string): StaffUser | null {
+    const user = this.data.staffUsers.find(u => u.id === id);
+    return user ? { ...user } : null;
+  }
+
   getStaffUsersForAdmin(): StaffUser[] {
     return this.data.staffUsers.map(u => ({ ...u }));
   }
 
-  authenticate(usernameOrPin: string): StaffUser | null {
-    const user = this.data.staffUsers.find(
-      u => (u.username.toLowerCase() === usernameOrPin.toLowerCase() || u.pin === usernameOrPin) && u.active
-    );
-    if (!user) return null;
-    return { ...user };
+  authenticate(input: { username?: string; pin?: string; credential?: string } | string): StaffUser | null {
+    if (typeof input === 'string') {
+      const cleanPin = input.trim();
+      if (!cleanPin) return null;
+      // Never allow authentication by username alone without knowing the secret PIN
+      const user = this.data.staffUsers.find(u => u.active && u.pin === cleanPin);
+      return user ? { ...user } : null;
+    }
+
+    const cleanUsername = input.username?.trim().toLowerCase();
+    const cleanPin = (input.pin ?? input.credential ?? '').trim();
+    if (!cleanPin) return null;
+
+    if (cleanUsername) {
+      const user = this.data.staffUsers.find(
+        u => u.active && u.username.toLowerCase() === cleanUsername && u.pin === cleanPin
+      );
+      return user ? { ...user } : null;
+    }
+
+    const user = this.data.staffUsers.find(u => u.active && u.pin === cleanPin);
+    return user ? { ...user } : null;
   }
 
   saveStaffUser(staffData: Partial<StaffUser>, changedByStaffName: string): StaffUser {
@@ -503,6 +524,8 @@ class CafeDatabase {
   createOrderRound(params: {
     tableId: string;
     tableToken?: string;
+    requireValidTableToken?: boolean;
+    placedByStaffName?: string;
     items: Array<{
       menuItemId: string;
       quantity: number;
@@ -512,39 +535,78 @@ class CafeDatabase {
     customerNote?: string;
     idempotencyKey?: string;
   }): { order: OrderRound; bill: Bill } {
-    const { tableId, tableToken, items, customerNote, idempotencyKey } = params;
+    const {
+      tableId,
+      tableToken,
+      requireValidTableToken = false,
+      placedByStaffName,
+      items,
+      customerNote,
+      idempotencyKey
+    } = params;
 
-    // Check idempotency
-    if (idempotencyKey && this.data.idempotencyKeys[idempotencyKey]) {
+    if (!tableId || typeof tableId !== 'string') {
+      throw new Error('Valid tableId is required');
+    }
+
+    const cleanTableId = tableId.trim().toUpperCase();
+    const table = this.getTable(cleanTableId);
+    if (!table) {
+      throw new Error(`Invalid table: ${cleanTableId}`);
+    }
+
+    // Enforce table QR security token BEFORE returning any idempotent record so guests cannot probe keys without token
+    if (requireValidTableToken) {
+      if (!table.tableToken || !tableToken || String(tableToken).trim() !== table.tableToken) {
+        const err: any = new Error(
+          `Forbidden: Valid table QR code scan is required to place an order for ${table.tableNumber}.`
+        );
+        err.statusCode = 403;
+        throw err;
+      }
+    } else if (table.tableToken && tableToken !== undefined && String(tableToken).trim() !== table.tableToken) {
+      const err: any = new Error(
+        `Security verification failed for ${table.tableNumber}. The table token does not match.`
+      );
+      err.statusCode = 403;
+      throw err;
+    }
+
+    // Check idempotency (scoped to matching tableId)
+    if (idempotencyKey && typeof idempotencyKey === 'string' && this.data.idempotencyKeys[idempotencyKey]) {
       const existing = this.getOrderRound(this.data.idempotencyKeys[idempotencyKey].orderId);
-      if (existing) {
+      if (existing && existing.tableId === table.id) {
         const bill = this.getBillBySessionId(existing.sessionId);
         return { order: existing, bill: bill! };
       }
     }
 
-    if (!items || items.length === 0) {
+    if (!items || !Array.isArray(items) || items.length === 0) {
       throw new Error('Order must contain at least one item');
     }
-
-    const table = this.getTable(tableId);
-    if (!table) throw new Error(`Invalid table: ${tableId}`);
-
-    // Verify table security token if a token was supplied or if table enforces secure token validation
-    if (table.tableToken && tableToken && tableToken !== table.tableToken) {
-      throw new Error(`Security verification failed for ${table.tableNumber}. The table token does not match.`);
+    if (items.length > 50) {
+      throw new Error('Order cannot exceed 50 distinct line items per round');
     }
 
-    // Get or start active dining session
-    const session = this.getOrCreateActiveSession(tableId);
-
-    // Validate and price items using trusted DB data
+    // Validate ALL items and compute prices from trusted DB BEFORE creating/mutating any session or bill
     const validatedOrderItems: OrderItem[] = [];
     let roundSubtotal = 0;
 
     for (const reqItem of items) {
-      if (typeof reqItem.quantity !== 'number' || reqItem.quantity <= 0 || !Number.isInteger(reqItem.quantity) || reqItem.quantity > 99) {
-        throw new Error(`Invalid quantity ${reqItem.quantity} for item ${reqItem.menuItemId}. Must be an integer between 1 and 99.`);
+      if (!reqItem || typeof reqItem !== 'object' || typeof reqItem.menuItemId !== 'string') {
+        throw new Error('Malformed order item payload');
+      }
+
+      if (
+        typeof reqItem.quantity !== 'number' ||
+        !Number.isFinite(reqItem.quantity) ||
+        reqItem.quantity <= 0 ||
+        !Number.isInteger(reqItem.quantity) ||
+        reqItem.quantity > 99
+      ) {
+        throw new Error(
+          `Invalid quantity ${reqItem.quantity} for item ${reqItem.menuItemId}. Must be an integer between 1 and 99.`
+        );
       }
 
       const menuItem = this.getMenuItem(reqItem.menuItemId);
@@ -552,57 +614,77 @@ class CafeDatabase {
         throw new Error(`Dish not found: ${reqItem.menuItemId}`);
       }
       if (!menuItem.isAvailable || menuItem.soldOut) {
-        throw new Error(`Dish "${menuItem.name}" is currently sold out and cannot be ordered`);
+        throw new Error(`Dish "${menuItem.name}" is currently unavailable or sold out and cannot be ordered`);
       }
 
-      // Verify all required customization groups are selected or safely defaulted
+      const rawSelections = Array.isArray(reqItem.selectedCustomizations)
+        ? reqItem.selectedCustomizations.map(s => ({ groupId: String(s.groupId), optionId: String(s.optionId) }))
+        : [];
+
+      // Validate that every submitted customization group and option exists on this menu item
+      for (const sel of rawSelections) {
+        const grp = menuItem.customizationGroups?.find(g => g.id === sel.groupId);
+        if (!grp) {
+          throw new Error(`Invalid customization group "${sel.groupId}" for ${menuItem.name}`);
+        }
+        const opt = grp.options.find(o => o.id === sel.optionId);
+        if (!opt) {
+          throw new Error(`Invalid customization option "${sel.optionId}" for ${menuItem.name}`);
+        }
+      }
+
+      // Enforce required & single-choice customization constraints
       if (menuItem.customizationGroups && menuItem.customizationGroups.length > 0) {
         for (const grp of menuItem.customizationGroups) {
-          if (grp.required) {
-            let hasSelection = reqItem.selectedCustomizations?.some(s => s.groupId === grp.id);
-            if (!hasSelection && grp.type === 'single' && grp.options.length > 0) {
-              if (!reqItem.selectedCustomizations) reqItem.selectedCustomizations = [];
-              reqItem.selectedCustomizations.push({
+          const groupSelections = rawSelections.filter(s => s.groupId === grp.id);
+          if (grp.type === 'single' && groupSelections.length > 1) {
+            throw new Error(`Only one option may be selected for "${grp.name}" on ${menuItem.name}`);
+          }
+          if (grp.required && groupSelections.length === 0) {
+            if (grp.type === 'single' && grp.options.length > 0) {
+              rawSelections.push({
                 groupId: grp.id,
                 optionId: grp.options[0].id
               });
-              hasSelection = true;
-            }
-            if (!hasSelection) {
+            } else {
               throw new Error(`Please select an option for required group "${grp.name}" on ${menuItem.name}`);
             }
           }
         }
       }
 
-      // Calculate customizations modifiers
+      // Calculate unit price strictly from trusted server DB prices & modifiers
       let unitPrice = menuItem.price;
       const appliedCustomizations: OrderItem['customizations'] = [];
+      const seenOptionKeys = new Set<string>();
 
-      if (reqItem.selectedCustomizations && Array.isArray(reqItem.selectedCustomizations)) {
-        for (const sel of reqItem.selectedCustomizations) {
-          const group = menuItem.customizationGroups.find(g => g.id === sel.groupId);
-          if (group) {
-            const option = group.options.find(o => o.id === sel.optionId);
-            if (option) {
-              unitPrice += option.priceModifier;
-              appliedCustomizations.push({
-                groupId: group.id,
-                groupName: group.name,
-                optionId: option.id,
-                optionName: option.name,
-                priceModifier: option.priceModifier
-              });
-            }
-          }
+      for (const sel of rawSelections) {
+        const dedupKey = `${sel.groupId}:${sel.optionId}`;
+        if (seenOptionKeys.has(dedupKey)) continue;
+        seenOptionKeys.add(dedupKey);
+
+        const group = menuItem.customizationGroups.find(g => g.id === sel.groupId);
+        const option = group?.options.find(o => o.id === sel.optionId);
+        if (group && option) {
+          unitPrice += option.priceModifier;
+          appliedCustomizations.push({
+            groupId: group.id,
+            groupName: group.name,
+            optionId: option.id,
+            optionName: option.name,
+            priceModifier: option.priceModifier
+          });
         }
       }
 
-      // Safeguard unit price
-      if (unitPrice < 0) unitPrice = menuItem.price;
+      unitPrice = Math.max(0, Math.round(unitPrice * 100) / 100);
+      const itemTotal = Math.round(unitPrice * reqItem.quantity * 100) / 100;
+      roundSubtotal = Math.round((roundSubtotal + itemTotal) * 100) / 100;
 
-      const itemTotal = unitPrice * reqItem.quantity;
-      roundSubtotal += itemTotal;
+      const cleanInstructions =
+        typeof reqItem.specialInstructions === 'string'
+          ? reqItem.specialInstructions.trim().slice(0, 300) || undefined
+          : undefined;
 
       validatedOrderItems.push({
         id: `oi_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -614,11 +696,14 @@ class CafeDatabase {
         quantity: reqItem.quantity,
         dietType: menuItem.dietType,
         customizations: appliedCustomizations,
-        specialInstructions: reqItem.specialInstructions?.trim() || undefined,
+        specialInstructions: cleanInstructions,
         imageUrl: menuItem.imageUrl,
         kitchenStatus: 'pending'
       });
     }
+
+    // Only create/open dining session AFTER all validations pass!
+    const session = this.getOrCreateActiveSession(table.id);
 
     const roundCount = session.orderRoundIds.length + 1;
     const orderNumber = `#HQC-${table.id}-${Date.now().toString().slice(-4)}`;
@@ -634,7 +719,7 @@ class CafeDatabase {
       status: 'submitted',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      customerNote: customerNote?.trim() || undefined,
+      customerNote: typeof customerNote === 'string' ? customerNote.trim().slice(0, 300) || undefined : undefined,
       idempotencyKey
     };
 

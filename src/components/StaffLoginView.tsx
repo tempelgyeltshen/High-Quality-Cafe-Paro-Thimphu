@@ -1,71 +1,46 @@
 import React, { useState } from 'react';
-import { Lock, UserCheck, KeyRound, Coffee, ChefHat, CreditCard, Shield, ArrowLeft, AlertCircle } from 'lucide-react';
+import { Lock, KeyRound, User, Coffee, ArrowLeft, AlertCircle, Shield } from 'lucide-react';
 import { StaffUser } from '../types/index.ts';
 import { api } from '../lib/api.ts';
 
 interface StaffLoginViewProps {
   onSuccessLogin: (user: StaffUser, token: string) => void;
   onCancel: () => void;
-  staffList: StaffUser[];
 }
 
 export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
   onSuccessLogin,
-  onCancel,
-  staffList
+  onCancel
 }) => {
-  const [credential, setCredential] = useState('');
+  const [username, setUsername] = useState('');
+  const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!credential.trim()) {
-      setError('Please enter your staff username or PIN code');
+    if (!pin.trim()) {
+      setError('Please enter your assigned staff security PIN');
       return;
     }
     setError(null);
     setIsLoading(true);
 
     try {
-      const res = await api.login(credential.trim());
+      const res = await api.login({
+        username: username.trim() || undefined,
+        pin: pin.trim()
+      });
       onSuccessLogin(res.user, res.token);
     } catch (err: any) {
-      setError(err.message || 'Invalid username or PIN code');
+      setError(err.message || 'Invalid staff username or security PIN');
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleQuickLogin = async (user: StaffUser) => {
-    setError(null);
-    setIsLoading(true);
-    try {
-      const res = await api.login(user.username);
-      onSuccessLogin(res.user, res.token);
-    } catch (err: any) {
-      setError(err.message || 'Failed to switch staff role');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const roleIcons: Record<string, any> = {
-    kitchen: ChefHat,
-    cashier: CreditCard,
-    admin: Shield,
-    manager: Shield
-  };
-
-  const roleDisplayNames: Record<string, string> = {
-    kitchen: 'Kitchen Cook (KDS Only)',
-    cashier: 'Counter Staff (Billing Only)',
-    admin: 'Administrator (Full Access)',
-    manager: 'Floor Manager (Ops & Reports)'
   };
 
   return (
-    <div className="min-h-screen bg-stone-900 text-stone-100 flex flex-col justify-center items-center p-4 py-12">
+    <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col justify-center items-center p-4 py-12">
       <div className="max-w-md w-full space-y-6">
         {/* Brand Header */}
         <div className="text-center space-y-2">
@@ -73,15 +48,15 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
             <Coffee className="w-6 h-6" />
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-white font-display">
-            High Quality Cafe Staff Portal
+            Staff & Management Sign-In
           </h1>
-          <p className="text-xs text-stone-400">
-            Sign in with your role credentials to access your designated station
+          <p className="text-xs text-stone-400 max-w-xs mx-auto leading-relaxed">
+            Authorized High Quality Cafe personnel only. Public registration is disabled.
           </p>
         </div>
 
-        {/* Manual Login Card */}
-        <div className="bg-stone-850 rounded-2xl border border-stone-800 p-6 shadow-xl space-y-5">
+        {/* Credentials Form */}
+        <div className="bg-stone-900 rounded-2xl border border-stone-800 p-6 shadow-xl space-y-5">
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
               <div className="p-3 bg-rose-950/60 border border-rose-800/80 text-rose-300 rounded-xl text-xs flex items-center gap-2">
@@ -92,19 +67,40 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
 
             <div>
               <label className="block text-xs font-semibold text-stone-300 mb-1.5">
-                Staff Username or PIN Code
+                Staff Username
               </label>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-stone-500">
-                  <KeyRound className="w-4 h-4" />
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-stone-500">
+                  <User className="w-4 h-4" />
                 </div>
                 <input
                   type="text"
-                  value={credential}
-                  onChange={(e) => setCredential(e.target.value)}
-                  placeholder="e.g. chef, cashier, admin or 4-digit PIN"
-                  className="w-full pl-9 pr-3 py-2.5 bg-stone-900 border border-stone-700 rounded-xl text-xs text-white placeholder-stone-500 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-colors"
+                  autoComplete="username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Enter assigned staff username"
+                  className="w-full h-11 pl-10 pr-3 bg-stone-950 border border-stone-700 rounded-xl text-xs sm:text-sm text-white placeholder-stone-500 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-colors"
                   autoFocus
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-stone-300 mb-1.5">
+                Security PIN
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-stone-500">
+                  <KeyRound className="w-4 h-4" />
+                </div>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="current-password"
+                  value={pin}
+                  onChange={(e) => setPin(e.target.value)}
+                  placeholder="Enter secret PIN code"
+                  className="w-full h-11 pl-10 pr-3 bg-stone-950 border border-stone-700 rounded-xl text-xs sm:text-sm text-white placeholder-stone-500 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-colors"
                 />
               </div>
             </div>
@@ -112,63 +108,30 @@ export const StaffLoginView: React.FC<StaffLoginViewProps> = ({
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 disabled:bg-stone-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2"
+              className="w-full min-h-[44px] py-2.5 px-4 bg-amber-600 hover:bg-amber-500 disabled:bg-stone-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
             >
-              <Lock className="w-3.5 h-3.5" />
-              <span>{isLoading ? 'Authenticating...' : 'Sign In to Station'}</span>
+              <Lock className="w-4 h-4" />
+              <span>{isLoading ? 'Verifying Credentials...' : 'Sign In to Authorized Station'}</span>
             </button>
           </form>
 
-          {/* Quick-Switch Evaluation Profiles */}
-          <div className="pt-4 border-t border-stone-800 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-stone-400 uppercase tracking-wider">
-                Quick Role Switching (Demo / Evaluation)
-              </span>
-            </div>
-
-            <div className="space-y-2">
-              {staffList.map((st) => {
-                const Icon = roleIcons[st.role] || UserCheck;
-                return (
-                  <button
-                    key={st.id}
-                    type="button"
-                    onClick={() => handleQuickLogin(st)}
-                    className="w-full p-3 bg-stone-900 hover:bg-stone-800 border border-stone-750 hover:border-amber-500/40 rounded-xl text-left transition-all flex items-center justify-between group"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-stone-800 text-amber-400 flex items-center justify-center group-hover:scale-105 transition-transform">
-                        <Icon className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <div className="text-xs font-bold text-stone-200 group-hover:text-amber-300 transition-colors">
-                          {st.name}
-                        </div>
-                        <div className="text-[10px] text-stone-400">
-                          {roleDisplayNames[st.role] || st.role} · PIN: {st.pin}
-                        </div>
-                      </div>
-                    </div>
-                    <span className="text-[11px] text-stone-500 group-hover:text-amber-400 font-semibold transition-colors">
-                      Enter →
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+          <div className="pt-4 border-t border-stone-800 flex items-start gap-2.5 text-[11px] text-stone-400 leading-relaxed">
+            <Shield className="w-4 h-4 text-amber-500/80 shrink-0 mt-0.5" />
+            <span>
+              Staff accounts are provisioned exclusively by café administrators. Unauthenticated guests cannot create accounts or view internal stations.
+            </span>
           </div>
         </div>
 
-        {/* Back to Customer Menu */}
+        {/* Exit back to public menu */}
         <div className="text-center">
           <button
             type="button"
             onClick={onCancel}
-            className="inline-flex items-center gap-1.5 text-xs text-stone-400 hover:text-stone-200 transition-colors"
+            className="inline-flex items-center gap-1.5 text-xs text-stone-400 hover:text-stone-200 transition-colors py-2 px-3 cursor-pointer"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Return to Guest Customer Menu</span>
+            <span>Exit to Guest Menu</span>
           </button>
         </div>
       </div>

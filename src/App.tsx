@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   api,
+  getStoredToken,
   getStoredUser,
   setStoredAuth,
   clearStoredAuth,
@@ -30,194 +31,374 @@ import { StaffLoginView } from './components/StaffLoginView.tsx';
 import { AccessDeniedView } from './components/AccessDeniedView.tsx';
 import { AlertOrderNotification } from './components/KitchenOrderAlert.tsx';
 
-type AppView = 'customer' | 'kitchen' | 'counter' | 'admin' | 'tables' | 'staff_login';
+type AppView = 'customer' | 'kitchen' | 'counter' | 'admin' | 'tables' | 'staff_login' | 'restricted';
+
+const DEFAULT_SETTINGS: SystemSettings = {
+  restaurantName: 'High Quality Cafe',
+  tagline: 'Paro, Bhutan · Open 24/7',
+  operatingHours: '24 Hours / 7 Days a Week',
+  currency: 'Nu.',
+  currencySymbol: 'Nu.',
+  taxRate: 0.05,
+  serviceChargeRate: 0.10,
+  allowGuestOrdering: true,
+  kitchenAudioAlert: false,
+  showPricesOnCustomerMenu: false,
+  address: 'High Quality Cafe, Paro Town, Paro, Bhutan',
+  phone: '+975 8 271234'
+};
+
+function parseRouteFromLocation(): {
+  view: AppView;
+  attemptedPath: string;
+  tableParam: string | null;
+  tokenParam: string | null;
+} {
+  if (typeof window === 'undefined') {
+    return { view: 'customer', attemptedPath: '/', tableParam: null, tokenParam: null };
+  }
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const rawTable = urlParams.get('table');
+  const rawToken = urlParams.get('token');
+  const tableParam = rawTable ? rawTable.trim().toUpperCase() : null;
+  const tokenParam = rawToken ? rawToken.trim() : null;
+  const path = window.location.pathname.replace(/\/+$/, '') || '/';
+
+  // Requirement 9: Scanning a QR code opens ONLY the guest-facing menu and grants zero internal access
+  if (tableParam || tokenParam || path === '/' || path === '/menu') {
+    return {
+      view: 'customer',
+      attemptedPath: path,
+      tableParam,
+      tokenParam
+    };
+  }
+
+  if (path === '/staff' || path === '/login') {
+    return { view: 'staff_login', attemptedPath: path, tableParam: null, tokenParam: null };
+  }
+  if (path === '/kitchen') {
+    return { view: 'kitchen', attemptedPath: path, tableParam: null, tokenParam: null };
+  }
+  if (path === '/counter') {
+    return { view: 'counter', attemptedPath: path, tableParam: null, tokenParam: null };
+  }
+  if (path === '/admin') {
+    return { view: 'admin', attemptedPath: path, tableParam: null, tokenParam: null };
+  }
+  if (path === '/tables') {
+    return { view: 'tables', attemptedPath: path, tableParam: null, tokenParam: null };
+  }
+
+  // Block manual URL guessing for any unknown or internal-sounding paths (/reports, /settings, /users, /dashboard, etc.)
+  return { view: 'restricted', attemptedPath: path, tableParam: null, tokenParam: null };
+}
 
 export default function App() {
-  // Navigation View
-  const [currentView, setCurrentView] = useState<AppView>('customer');
-  const [currentTableId, setCurrentTableId] = useState<string>('T01');
+  const initialRoute = parseRouteFromLocation();
+
+  const [currentView, setCurrentView] = useState<AppView>(initialRoute.view);
+  const [attemptedPath, setAttemptedPath] = useState<string>(initialRoute.attemptedPath);
   const [pendingStaffView, setPendingStaffView] = useState<AppView | null>(null);
 
-  // Real-Time Incoming Kitchen Alerts
-  const [incomingKitchenAlerts, setIncomingKitchenAlerts] = useState<AlertOrderNotification[]>([]);
+  // Isolated Guest Table QR State
+  const [attemptedTableId, setAttemptedTableId] = useState<string | null>(initialRoute.tableParam);
+  const [currentTableToken, setCurrentTableToken] = useState<string | null>(initialRoute.tokenParam);
+  const [verifiedGuestTable, setVerifiedGuestTable] = useState<RestaurantTable | null>(null);
+  const [isTableTokenValidated, setIsTableTokenValidated] = useState<boolean>(false);
+  const [guestSessionOrders, setGuestSessionOrders] = useState<OrderRound[]>([]);
 
-  // Core Data
-  const [settings, setSettings] = useState<SystemSettings>({
-    restaurantName: 'High Quality Cafe',
-    tagline: 'Paro, Bhutan · Open 24/7',
-    operatingHours: '24 Hours / 7 Days a Week',
-    currency: 'Nu.',
-    currencySymbol: 'Nu.',
-    taxRate: 0.05,
-    serviceChargeRate: 0.10,
-    allowGuestOrdering: true,
-    kitchenAudioAlert: true,
-    showPricesOnCustomerMenu: false,
-    address: 'High Quality Cafe, Paro Town, Paro, Bhutan',
-    phone: '+975 8 271234'
-  });
+  // Staff State (Used ONLY on separated staff routes)
+  const [currentUser, setCurrentUser] = useState<StaffUser | null>(getStoredUser());
+  const [incomingKitchenAlerts, setIncomingKitchenAlerts] = useState<AlertOrderNotification[]>([]);
+  const [isTestModalOpen, setIsTestModalOpen] = useState(false);
+
+  // Shared Menu Catalog & Staff Operational Data
+  const [settings, setSettings] = useState<SystemSettings>(DEFAULT_SETTINGS);
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [tables, setTables] = useState<RestaurantTable[]>([]);
   const [orders, setOrders] = useState<OrderRound[]>([]);
   const [bills, setBills] = useState<Bill[]>([]);
 
-  // Auth: Start as null (Guest Customer) unless explicitly stored in session
-  const [currentUser, setCurrentUser] = useState<StaffUser | null>(getStoredUser());
-  const [staffList, setStaffList] = useState<StaffUser[]>([]);
+  const isGuestMode = currentView === 'customer';
 
-  // Modals & UI
-  const [isTestModalOpen, setIsTestModalOpen] = useState(false);
-  const [initialLoading, setInitialLoading] = useState(true);
-
-  const [currentTableToken, setCurrentTableToken] = useState<string | null>(null);
-  const [isTableTokenValidated, setIsTableTokenValidated] = useState<boolean>(false);
-
-  // Parse URL on initial load for table query parameter and routes
+  // Keep route state synced with browser Back / Forward navigation
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const urlParams = new URLSearchParams(window.location.search);
-      const tableParam = urlParams.get('table');
-      const tokenParam = urlParams.get('token');
-      if (tokenParam) {
-        setCurrentTableToken(tokenParam);
-      }
-      if (tableParam) {
-        setCurrentTableId(tableParam.toUpperCase());
-        setCurrentView('customer');
-      } else {
-        const path = window.location.pathname;
-        if (path.includes('/kitchen')) setCurrentView('kitchen');
-        else if (path.includes('/counter')) setCurrentView('counter');
-        else if (path.includes('/admin')) setCurrentView('admin');
-        else if (path.includes('/tables')) setCurrentView('tables');
-        else if (path.includes('/staff')) setCurrentView('staff_login');
-      }
-    }
+    const handlePopState = () => {
+      const parsed = parseRouteFromLocation();
+      setCurrentView(parsed.view);
+      setAttemptedPath(parsed.attemptedPath);
+      setAttemptedTableId(parsed.tableParam);
+      setCurrentTableToken(parsed.tokenParam);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Validate table token whenever tables or current table/token change
-  useEffect(() => {
-    const table = tables.find(t => t.id === currentTableId);
-    if (table && currentTableToken) {
-      setIsTableTokenValidated(table.tableToken === currentTableToken);
-    } else {
-      setIsTableTokenValidated(false);
-    }
-  }, [tables, currentTableId, currentTableToken]);
+  // Role Permission Guard
+  const isViewPermitted = useCallback((view: AppView, user: StaffUser | null): boolean => {
+    if (view === 'customer' || view === 'staff_login') return true;
+    if (view === 'restricted') return false;
+    if (!user) return false;
+    if (user.role === 'admin' || user.role === 'manager') return true;
+    if (view === 'kitchen') return user.role === 'kitchen';
+    if (view === 'counter') return user.role === 'cashier';
+    return false;
+  }, []);
 
-  // Fetch initial data
-  const loadAllData = useCallback(async () => {
+  const getPermittedViewForRole = (user: StaffUser | null): AppView => {
+    if (!user) return 'customer';
+    if (user.role === 'kitchen') return 'kitchen';
+    if (user.role === 'cashier') return 'counter';
+    return 'admin';
+  };
+
+  // ==========================================
+  // ISOLATED GUEST DATA LOADER (Zero Staff Calls)
+  // ==========================================
+  const loadGuestData = useCallback(async () => {
     try {
-      const [menuData, counterData, staffData] = await Promise.all([
-        api.getMenu(),
-        api.getCounterBills().catch(() => ({ bills: [], tables: [], orders: [] })),
-        api.getDemoStaffAccounts().catch(() => [])
-      ]);
-
+      const menuData = await api.getGuestMenu();
       if (menuData) {
         setSettings(menuData.settings);
         setCategories(menuData.categories);
         setMenuItems(menuData.menuItems);
       }
 
-      if (counterData) {
+      if (attemptedTableId) {
+        try {
+          const verification = await api.getTableVerification(
+            attemptedTableId,
+            currentTableToken || undefined
+          );
+          if (verification.isTokenValid && currentTableToken) {
+            setVerifiedGuestTable(verification.table);
+            setIsTableTokenValidated(true);
+            const tableOrdersRes = await api.getGuestTableOrders(
+              verification.table.id,
+              currentTableToken
+            );
+            setGuestSessionOrders(tableOrdersRes.rounds || []);
+          } else {
+            setVerifiedGuestTable(null);
+            setIsTableTokenValidated(false);
+            setGuestSessionOrders([]);
+          }
+        } catch {
+          setVerifiedGuestTable(null);
+          setIsTableTokenValidated(false);
+          setGuestSessionOrders([]);
+        }
+      } else {
+        setVerifiedGuestTable(null);
+        setIsTableTokenValidated(false);
+        setGuestSessionOrders([]);
+      }
+    } catch (err) {
+      console.error('Failed to load guest menu', err);
+    }
+  }, [attemptedTableId, currentTableToken]);
+
+  // ==========================================
+  // AUTHENTICATED STAFF DATA LOADER (Role-Scoped)
+  // ==========================================
+  const loadStaffData = useCallback(async () => {
+    const token = getStoredToken();
+    if (!token) {
+      setCurrentUser(null);
+      return;
+    }
+
+    try {
+      const verifiedStaff = await api.getMe();
+      setCurrentUser(verifiedStaff);
+      setStoredAuth(token, verifiedStaff);
+
+      const menuData = await api.getMenu();
+      if (menuData) {
+        setSettings(menuData.settings);
+        setCategories(menuData.categories);
+        setMenuItems(menuData.menuItems);
+      }
+
+      if (verifiedStaff.role === 'kitchen') {
+        const tickets = await api.getKitchenTickets();
+        setOrders(tickets);
+      } else if (
+        verifiedStaff.role === 'cashier' ||
+        verifiedStaff.role === 'manager' ||
+        verifiedStaff.role === 'admin'
+      ) {
+        const counterData = await api.getCounterBills();
         setBills(counterData.bills);
         setTables(counterData.tables);
         setOrders(counterData.orders);
       }
-
-      if (staffData && staffData.length > 0) {
-        setStaffList(staffData);
-      }
-    } catch (err) {
-      console.error('Failed to load initial cafe data', err);
-    } finally {
-      setInitialLoading(false);
+    } catch {
+      // Server rejected or expired token — revoke local session immediately
+      clearStoredAuth();
+      setCurrentUser(null);
     }
   }, []);
 
   useEffect(() => {
-    loadAllData();
-  }, [loadAllData]);
-
-  // Handle Real-Time SSE Events
-  const handleRealTimeEvent = useCallback((event: string, data: any) => {
-    if (event === 'order_created') {
-      soundService.playNewOrderChime();
-      if (data.order) {
-        setIncomingKitchenAlerts(prev => [
-          {
-            id: `alert_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-            order: data.order,
-            receivedAt: Date.now()
-          },
-          ...prev
-        ]);
-      }
-      setOrders(prev => {
-        const exists = prev.some(o => o.id === data.order.id);
-        if (exists) return prev.map(o => o.id === data.order.id ? data.order : o);
-        return [data.order, ...prev];
-      });
-      if (data.bill) {
-        setBills(prev => {
-          const exists = prev.some(b => b.id === data.bill.id);
-          if (exists) return prev.map(b => b.id === data.bill.id ? data.bill : b);
-          return [data.bill, ...prev];
-        });
-      }
-      setTables(prev => prev.map(t => t.id === data.tableId ? { ...t, status: 'occupied' } : t));
-    } else if (event === 'item_status_updated' || event === 'order_status_updated') {
-      setOrders(prev => prev.map(o => o.id === data.order.id ? data.order : o));
-      if (data.bill) {
-        setBills(prev => prev.map(b => b.id === data.bill.id ? data.bill : b));
-      }
-    } else if (event === 'bill_updated' || event === 'payment_recorded') {
-      setBills(prev => prev.map(b => b.id === data.bill.id ? data.bill : b));
-    } else if (event === 'table_closed') {
-      setTables(prev => prev.map(t => t.id === data.tableId ? { ...t, status: 'available', currentSessionId: null } : t));
-    } else if (event === 'tables_updated') {
-      setTables(prev => {
-        const idx = prev.findIndex(t => t.id === data.table.id);
-        if (idx >= 0) {
-          const cp = [...prev];
-          cp[idx] = data.table;
-          return cp;
-        }
-        return [...prev, data.table];
-      });
-    } else if (event === 'table_deleted') {
-      setTables(prev => prev.filter(t => t.id !== data.id));
-    } else if (event === 'menu_updated') {
-      setMenuItems(prev => {
-        const idx = prev.findIndex(m => m.id === data.item.id);
-        if (idx >= 0) {
-          const copy = [...prev];
-          copy[idx] = data.item;
-          return copy;
-        }
-        return [...prev, data.item];
-      });
-    } else if (event === 'menu_availability_changed') {
-      setMenuItems(prev => prev.map(m => m.id === data.item.id ? data.item : m));
-    } else if (event === 'menu_item_deleted') {
-      setMenuItems(prev => prev.filter(m => m.id !== data.id));
-    } else if (event === 'settings_updated') {
-      setSettings(data.settings);
+    if (isGuestMode) {
+      loadGuestData();
+    } else if (currentView !== 'staff_login' && currentView !== 'restricted') {
+      loadStaffData();
     }
-  }, []);
+  }, [isGuestMode, currentView, loadGuestData, loadStaffData]);
 
-  const { isConnected } = useRealTimeEvents(handleRealTimeEvent);
+  // ==========================================
+  // SCOPED REAL-TIME SSE HANDLER
+  // ==========================================
+  const handleRealTimeEvent = useCallback(
+    (event: string, data: any) => {
+      // Public menu & settings sync
+      if (event === 'menu_updated') {
+        setMenuItems(prev => {
+          const idx = prev.findIndex(m => m.id === data.item.id);
+          if (idx >= 0) {
+            const copy = [...prev];
+            copy[idx] = data.item;
+            return copy;
+          }
+          return [...prev, data.item];
+        });
+        return;
+      }
+      if (event === 'menu_availability_changed') {
+        setMenuItems(prev => prev.map(m => (m.id === data.item.id ? data.item : m)));
+        return;
+      }
+      if (event === 'menu_item_deleted') {
+        setMenuItems(prev => prev.filter(m => m.id !== data.id));
+        return;
+      }
+      if (event === 'settings_updated' && data.settings) {
+        setSettings(data.settings);
+        return;
+      }
 
-  // Authentication Handlers
-  const handleLoginDemoUser = async (user: StaffUser) => {
-    try {
-      const res = await api.login(user.username);
-      setStoredAuth(res.token, res.user);
-      setCurrentUser(res.user);
-    } catch (e) {
-      console.error('Login error', e);
+      // Guest Mode: ONLY update own verified table's order rounds (no chimes, no bills, no other tables)
+      if (isGuestMode) {
+        if (!isTableTokenValidated || !verifiedGuestTable) return;
+
+        if (event === 'order_created' && data.order?.tableId === verifiedGuestTable.id) {
+          setGuestSessionOrders(prev => {
+            const exists = prev.some(o => o.id === data.order.id);
+            if (exists) return prev.map(o => (o.id === data.order.id ? data.order : o));
+            return [data.order, ...prev];
+          });
+        } else if (
+          (event === 'item_status_updated' || event === 'order_status_updated') &&
+          data.order?.tableId === verifiedGuestTable.id
+        ) {
+          setGuestSessionOrders(prev => prev.map(o => (o.id === data.order.id ? data.order : o)));
+        } else if (event === 'table_closed' && data.tableId === verifiedGuestTable.id) {
+          setGuestSessionOrders([]);
+        }
+        return;
+      }
+
+      // Authenticated Staff Mode ONLY
+      if (!currentUser) return;
+
+      if (event === 'order_created') {
+        if (settings.kitchenAudioAlert) {
+          soundService.playNewOrderChime();
+        }
+        if (data.order && (currentUser.role === 'kitchen' || currentUser.role === 'admin' || currentUser.role === 'manager')) {
+          setIncomingKitchenAlerts(prev => [
+            {
+              id: `alert_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              order: data.order,
+              receivedAt: Date.now()
+            },
+            ...prev
+          ]);
+        }
+        if (data.order) {
+          setOrders(prev => {
+            const exists = prev.some(o => o.id === data.order.id);
+            if (exists) return prev.map(o => (o.id === data.order.id ? data.order : o));
+            return [data.order, ...prev];
+          });
+        }
+        if (data.bill) {
+          setBills(prev => {
+            const exists = prev.some(b => b.id === data.bill.id);
+            if (exists) return prev.map(b => (b.id === data.bill.id ? data.bill : b));
+            return [data.bill, ...prev];
+          });
+        }
+        setTables(prev => prev.map(t => (t.id === data.tableId ? { ...t, status: 'occupied' } : t)));
+      } else if (event === 'item_status_updated' || event === 'order_status_updated') {
+        if (data.order) {
+          setOrders(prev => prev.map(o => (o.id === data.order.id ? data.order : o)));
+        }
+        if (data.bill) {
+          setBills(prev => prev.map(b => (b.id === data.bill.id ? data.bill : b)));
+        }
+      } else if (event === 'bill_updated' || event === 'payment_recorded') {
+        if (data.bill) {
+          setBills(prev => prev.map(b => (b.id === data.bill.id ? data.bill : b)));
+        }
+      } else if (event === 'table_closed') {
+        setTables(prev =>
+          prev.map(t => (t.id === data.tableId ? { ...t, status: 'available', currentSessionId: null } : t))
+        );
+      } else if (event === 'tables_updated' && data.table) {
+        setTables(prev => {
+          const idx = prev.findIndex(t => t.id === data.table.id);
+          if (idx >= 0) {
+            const cp = [...prev];
+            cp[idx] = data.table;
+            return cp;
+          }
+          return [...prev, data.table];
+        });
+      } else if (event === 'table_deleted') {
+        setTables(prev => prev.filter(t => t.id !== data.id));
+      }
+    },
+    [isGuestMode, isTableTokenValidated, verifiedGuestTable, currentUser, settings.kitchenAudioAlert]
+  );
+
+  const sseScope =
+    isGuestMode
+      ? 'guest'
+      : currentView === 'staff_login' || currentView === 'restricted' || !currentUser
+      ? 'disabled'
+      : 'staff';
+
+  const { isConnected } = useRealTimeEvents(handleRealTimeEvent, {
+    scope: sseScope,
+    staffToken: sseScope === 'staff' ? getStoredToken() : null,
+    tableId: isGuestMode && isTableTokenValidated && verifiedGuestTable ? verifiedGuestTable.id : null,
+    tableToken: isGuestMode && isTableTokenValidated ? currentTableToken : null
+  });
+
+  // ==========================================
+  // NAVIGATION & AUTHENTICATION HANDLERS
+  // ==========================================
+  const navigateToGuestMenu = () => {
+    setCurrentView('customer');
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams();
+      if (attemptedTableId) params.set('table', attemptedTableId);
+      if (currentTableToken) params.set('token', currentTableToken);
+      const qs = params.toString();
+      window.history.pushState({}, '', qs ? `/menu?${qs}` : '/');
+    }
+  };
+
+  const navigateToStaffLogin = () => {
+    setCurrentView('staff_login');
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', '/staff');
     }
   };
 
@@ -225,54 +406,44 @@ export default function App() {
     setStoredAuth(token, user);
     setCurrentUser(user);
 
-    // Route to permitted destination
+    let targetView: AppView;
     if (pendingStaffView && isViewPermitted(pendingStaffView, user)) {
-      setCurrentView(pendingStaffView);
+      targetView = pendingStaffView;
       setPendingStaffView(null);
     } else {
-      if (user.role === 'kitchen') setCurrentView('kitchen');
-      else if (user.role === 'cashier') setCurrentView('counter');
-      else setCurrentView('admin');
+      targetView = getPermittedViewForRole(user);
+    }
+
+    setCurrentView(targetView);
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', `/${targetView}`);
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+    } catch {
+      // Ignore network error during logout
+    }
     clearStoredAuth();
     setCurrentUser(null);
-    setCurrentView('customer');
-    if (typeof window !== 'undefined') {
-      window.history.pushState({}, '', `/menu?table=${currentTableId}`);
-    }
+    setOrders([]);
+    setBills([]);
+    setTables([]);
+    setIsTestModalOpen(false);
+    navigateToStaffLogin();
   };
 
-  // Role Permission Guard
-  const isViewPermitted = (view: AppView, user: StaffUser | null): boolean => {
-    if (view === 'customer' || view === 'staff_login') return true;
-    if (!user) return false;
-    if (user.role === 'admin' || user.role === 'manager') return true;
-    if (view === 'kitchen') return user.role === 'kitchen';
-    if (view === 'counter') return user.role === 'cashier';
-    return false;
-  };
-
-  const handleNavigate = (view: AppView) => {
+  const handleStaffNavigate = (view: 'customer' | 'kitchen' | 'counter' | 'admin' | 'tables') => {
     if (view === 'customer') {
-      setCurrentView('customer');
-      if (typeof window !== 'undefined') {
-        window.history.pushState({}, '', `/menu?table=${currentTableId}`);
-      }
-      return;
-    }
-
-    if (view === 'staff_login') {
-      setCurrentView('staff_login');
+      navigateToGuestMenu();
       return;
     }
 
     if (!currentUser) {
-      // Must authenticate first
       setPendingStaffView(view);
-      setCurrentView('staff_login');
+      navigateToStaffLogin();
       return;
     }
 
@@ -282,7 +453,9 @@ export default function App() {
     }
   };
 
-  // Submit Order from Customer Menu
+  // ==========================================
+  // ISOLATED GUEST ORDER SUBMISSION
+  // ==========================================
   const handleCustomerSubmitOrder = async (
     items: Array<{
       menuItemId: string;
@@ -294,69 +467,82 @@ export default function App() {
     idempotencyKey?: string,
     tableToken?: string
   ) => {
-    const res = await api.createOrder({
-      tableId: currentTableId,
-      tableToken: tableToken || currentTableToken || undefined,
+    const targetTableId = verifiedGuestTable?.id || attemptedTableId || '';
+    const token = tableToken || currentTableToken || '';
+
+    const res = await api.createGuestOrder({
+      tableId: targetTableId,
+      tableToken: token,
       items,
       customerNote,
       idempotencyKey
     });
 
-    setOrders(prev => [res.order, ...prev.filter(o => o.id !== res.order.id)]);
-    setBills(prev => [res.bill, ...prev.filter(b => b.id !== res.bill.id)]);
-    setTables(prev => prev.map(t => t.id === currentTableId ? { ...t, status: 'occupied' } : t));
-
+    setGuestSessionOrders(prev => [res.order, ...prev.filter(o => o.id !== res.order.id)]);
     return { order: res.order, bill: res.bill };
   };
 
-  // Kitchen Actions
-  const handleKitchenUpdateItemStatus = async (orderId: string, itemId: string, status: OrderItemKitchenStatus, reason?: string) => {
+  // ==========================================
+  // STAFF STATION MUTATION HANDLERS
+  // ==========================================
+  const handleKitchenUpdateItemStatus = async (
+    orderId: string,
+    itemId: string,
+    status: OrderItemKitchenStatus,
+    reason?: string
+  ) => {
     const res = await api.updateKitchenItemStatus(orderId, itemId, status, reason);
-    setOrders(prev => prev.map(o => o.id === orderId ? res.order : o));
+    setOrders(prev => prev.map(o => (o.id === orderId ? res.order : o)));
     if (res.bill) {
-      setBills(prev => prev.map(b => b.id === res.bill!.id ? res.bill! : b));
+      setBills(prev => prev.map(b => (b.id === res.bill!.id ? res.bill! : b)));
     }
   };
 
   const handleKitchenUpdateOrderStatus = async (orderId: string, status: OrderStatus) => {
     const res = await api.updateOrderStatus(orderId, status);
-    setOrders(prev => prev.map(o => o.id === orderId ? res.order : o));
+    setOrders(prev => prev.map(o => (o.id === orderId ? res.order : o)));
   };
 
-  // Counter Actions
-  const handleApplyDiscount = async (billId: string, discount: { name: string; type: 'percentage' | 'fixed'; value: number; reason: string }) => {
+  const handleApplyDiscount = async (
+    billId: string,
+    discount: { name: string; type: 'percentage' | 'fixed'; value: number; reason: string }
+  ) => {
     const res = await api.applyDiscount(billId, discount);
-    setBills(prev => prev.map(b => b.id === billId ? res.bill : b));
+    setBills(prev => prev.map(b => (b.id === billId ? res.bill : b)));
   };
 
   const handleRemoveDiscount = async (billId: string) => {
     const res = await api.removeDiscount(billId);
-    setBills(prev => prev.map(b => b.id === billId ? res.bill : b));
+    setBills(prev => prev.map(b => (b.id === billId ? res.bill : b)));
   };
 
-  const handleRecordPayment = async (billId: string, payment: { method: PaymentMethod; amount: number; reference?: string }) => {
+  const handleRecordPayment = async (
+    billId: string,
+    payment: { method: PaymentMethod; amount: number; reference?: string }
+  ) => {
     const res = await api.recordPayment(billId, payment);
-    setBills(prev => prev.map(b => b.id === billId ? res.bill : b));
+    setBills(prev => prev.map(b => (b.id === billId ? res.bill : b)));
   };
 
   const handleCloseSession = async (sessionId: string) => {
     const res = await api.closeSession(sessionId);
-    setTables(prev => prev.map(t => t.id === res.session.tableId ? { ...t, status: 'available', currentSessionId: null } : t));
-    await loadAllData();
+    setTables(prev =>
+      prev.map(t => (t.id === res.session.tableId ? { ...t, status: 'available', currentSessionId: null } : t))
+    );
+    await loadStaffData();
   };
 
   const handleMoveSession = async (sessionId: string, targetTableId: string) => {
     await api.moveSession(sessionId, targetTableId);
-    await loadAllData();
+    await loadStaffData();
   };
 
   const handleAddOrderFromCounter = async (tableId: string, items: any[], note?: string) => {
     const res = await api.addOrderFromCounter(tableId, items, note);
     setOrders(prev => [res.order, ...prev]);
-    setBills(prev => prev.map(b => b.id === res.bill.id ? res.bill : b));
+    setBills(prev => prev.map(b => (b.id === res.bill.id ? res.bill : b)));
   };
 
-  // Admin Actions
   const handleSaveMenuItem = async (item: Partial<MenuItem>) => {
     const res = await api.saveMenuItem(item);
     setMenuItems(prev => {
@@ -372,7 +558,7 @@ export default function App() {
 
   const handleToggleAvailability = async (id: string, isAvailable: boolean, soldOut: boolean) => {
     const res = await api.toggleMenuItemAvailability(id, isAvailable, soldOut);
-    setMenuItems(prev => prev.map(m => m.id === id ? res.item : m));
+    setMenuItems(prev => prev.map(m => (m.id === id ? res.item : m)));
   };
 
   const handleDeleteMenuItem = async (id: string) => {
@@ -380,246 +566,191 @@ export default function App() {
     setMenuItems(prev => prev.filter(m => m.id !== id));
   };
 
-  const activeOrdersForCurrentTable = orders.filter(
-    o => o.tableId === currentTableId && o.status !== 'served' && o.status !== 'cancelled'
-  );
-
-  const sessionOrdersForCurrentTable = orders.filter(
-    o => o.tableId === currentTableId && o.status !== 'cancelled'
-  );
-
   const handleDismissKitchenAlert = (id: string) => {
     setIncomingKitchenAlerts(prev => prev.filter(a => a.id !== id));
   };
 
   const handleSimulateKitchenOrder = async () => {
     const randomTable = tables[Math.floor(Math.random() * Math.min(tables.length, 5))] || { id: 'T01' };
-    const sampleItem = menuItems.find(m => m.id === 'item_suja_shamdray') || menuItems[0];
+    const sampleItem = menuItems.find(m => m.isAvailable && !m.soldOut) || menuItems[0];
     if (!sampleItem) return;
 
     try {
       await api.createOrder({
         tableId: randomTable.id,
         items: [{ menuItemId: sampleItem.id, quantity: 2 }],
-        customerNote: 'Rush preparation · Table guest'
+        customerNote: 'Rush preparation · Kitchen station test'
       });
     } catch (e) {
       console.error('Failed to simulate test order', e);
     }
   };
 
-  // Helper for permitted view redirection
-  const getPermittedViewForCurrentRole = (): AppView => {
-    if (!currentUser) return 'customer';
-    if (currentUser.role === 'kitchen') return 'kitchen';
-    if (currentUser.role === 'cashier') return 'counter';
-    return 'admin';
-  };
+  // ==========================================
+  // RENDER 1: DEDICATED ISOLATED GUEST INTERFACE
+  // ==========================================
+  if (isGuestMode) {
+    const activeGuestOrders = guestSessionOrders.filter(
+      o => o.status !== 'served' && o.status !== 'cancelled'
+    );
 
-  return (
-    <div className="min-h-screen bg-stone-50 font-sans selection:bg-amber-100 selection:text-amber-900">
-      {/* Universal Top Bar (Isolated per role) */}
-      {currentView !== 'staff_login' && (
+    return (
+      <div className="min-h-screen bg-stone-50 font-sans selection:bg-amber-100 selection:text-amber-900">
         <Navbar
-          currentView={currentView as any}
-          onNavigate={handleNavigate as any}
-          currentUser={currentUser}
-          onLoginDemoUser={handleLoginDemoUser}
-          onLogout={handleLogout}
-          staffList={staffList}
+          currentView="customer"
+          onNavigate={() => {}}
+          currentUser={null}
+          onLogout={() => {}}
           isConnected={isConnected}
-          onOpenTestRunner={() => setIsTestModalOpen(true)}
-          onOpenStaffLogin={() => setCurrentView('staff_login')}
-          currentTableId={currentTableId}
+          verifiedTableLabel={isTableTokenValidated && verifiedGuestTable ? verifiedGuestTable.tableNumber : null}
+          verifiedTableSection={isTableTokenValidated && verifiedGuestTable ? verifiedGuestTable.section : null}
         />
-      )}
 
-      {/* VIEW: STAFF SIGN-IN PORTAL */}
-      {currentView === 'staff_login' && (
-        <StaffLoginView
-          onSuccessLogin={handleLoginSuccess}
-          onCancel={() => setCurrentView('customer')}
-          staffList={staffList}
-        />
-      )}
-
-      {/* VIEW: CUSTOMER MENU (QR Code Entry, No login required) */}
-      {currentView === 'customer' && (
         <CustomerMenu
           settings={settings}
           categories={categories}
           menuItems={menuItems}
-          tables={tables}
-          currentTableId={currentTableId}
-          onTableChange={(id) => {
-            setCurrentTableId(id);
-            if (typeof window !== 'undefined') {
-              window.history.pushState({}, '', `/menu?table=${id}`);
-            }
-          }}
-          onSubmitOrder={handleCustomerSubmitOrder}
-          activeOrders={activeOrdersForCurrentTable}
-          sessionOrders={sessionOrdersForCurrentTable}
+          verifiedTable={isTableTokenValidated ? verifiedGuestTable : null}
+          attemptedTableId={attemptedTableId}
           currentTableToken={currentTableToken || undefined}
           isTableTokenValidated={isTableTokenValidated}
-          onRefreshOrders={loadAllData}
-          onOpenStaffLogin={() => setCurrentView('staff_login')}
+          onSubmitOrder={handleCustomerSubmitOrder}
+          activeOrders={activeGuestOrders}
+          sessionOrders={guestSessionOrders}
+          onRefreshOrders={loadGuestData}
+        />
+      </div>
+    );
+  }
+
+  // ==========================================
+  // RENDER 2: SEPARATE STAFF SIGN-IN PORTAL (/staff)
+  // ==========================================
+  if (currentView === 'staff_login') {
+    return (
+      <StaffLoginView
+        onSuccessLogin={handleLoginSuccess}
+        onCancel={navigateToGuestMenu}
+      />
+    );
+  }
+
+  // ==========================================
+  // RENDER 3: BLOCKED UNKNOWN / PROTECTED URL GUARD
+  // ==========================================
+  if (currentView === 'restricted' || !currentUser || !isViewPermitted(currentView, currentUser)) {
+    return (
+      <AccessDeniedView
+        currentUser={currentUser}
+        attemptedView={currentView === 'restricted' ? attemptedPath : currentView}
+        onNavigatePermitted={() => {
+          const permitted = getPermittedViewForRole(currentUser);
+          handleStaffNavigate(permitted as any);
+        }}
+        onSwitchStaff={() => {
+          if (currentView !== 'restricted') {
+            setPendingStaffView(currentView);
+          }
+          navigateToStaffLogin();
+        }}
+        onReturnToCustomer={navigateToGuestMenu}
+      />
+    );
+  }
+
+  // ==========================================
+  // RENDER 4: AUTHORIZED STAFF CONSOLES
+  // ==========================================
+  return (
+    <div className="min-h-screen bg-stone-50 font-sans selection:bg-amber-100 selection:text-amber-900">
+      <Navbar
+        currentView={currentView}
+        onNavigate={handleStaffNavigate}
+        currentUser={currentUser}
+        onLogout={handleLogout}
+        isConnected={isConnected}
+        onOpenTestRunner={() => setIsTestModalOpen(true)}
+        onOpenStaffLogin={navigateToStaffLogin}
+      />
+
+      {currentView === 'kitchen' && (
+        <KitchenDisplay
+          orders={orders}
+          onUpdateItemStatus={handleKitchenUpdateItemStatus}
+          onUpdateOrderStatus={handleKitchenUpdateOrderStatus}
+          incomingAlerts={incomingKitchenAlerts}
+          onDismissAlert={handleDismissKitchenAlert}
+          onSimulateOrder={handleSimulateKitchenOrder}
         />
       )}
 
-      {/* VIEW: KITCHEN DISPLAY SYSTEM */}
-      {currentView === 'kitchen' && (
-        !currentUser ? (
-          <AccessDeniedView
-            currentUser={null}
-            attemptedView="kitchen"
-            onNavigatePermitted={() => setCurrentView('customer')}
-            onSwitchStaff={() => setCurrentView('staff_login')}
-            onReturnToCustomer={() => setCurrentView('customer')}
-          />
-        ) : !isViewPermitted('kitchen', currentUser) ? (
-          <AccessDeniedView
-            currentUser={currentUser}
-            attemptedView="kitchen"
-            onNavigatePermitted={() => setCurrentView(getPermittedViewForCurrentRole())}
-            onSwitchStaff={() => setCurrentView('staff_login')}
-            onReturnToCustomer={() => setCurrentView('customer')}
-          />
-        ) : (
-          <KitchenDisplay
-            orders={orders}
-            onUpdateItemStatus={handleKitchenUpdateItemStatus}
-            onUpdateOrderStatus={handleKitchenUpdateOrderStatus}
-            incomingAlerts={incomingKitchenAlerts}
-            onDismissAlert={handleDismissKitchenAlert}
-            onSimulateOrder={handleSimulateKitchenOrder}
-          />
-        )
-      )}
-
-      {/* VIEW: COUNTER BILLING CONSOLE */}
       {currentView === 'counter' && (
-        !currentUser ? (
-          <AccessDeniedView
-            currentUser={null}
-            attemptedView="counter"
-            onNavigatePermitted={() => setCurrentView('customer')}
-            onSwitchStaff={() => setCurrentView('staff_login')}
-            onReturnToCustomer={() => setCurrentView('customer')}
-          />
-        ) : !isViewPermitted('counter', currentUser) ? (
-          <AccessDeniedView
-            currentUser={currentUser}
-            attemptedView="counter"
-            onNavigatePermitted={() => setCurrentView(getPermittedViewForCurrentRole())}
-            onSwitchStaff={() => setCurrentView('staff_login')}
-            onReturnToCustomer={() => setCurrentView('customer')}
-          />
-        ) : (
-          <CounterConsole
-            bills={bills}
-            tables={tables}
-            orders={orders}
-            menuItems={menuItems}
-            currentUser={currentUser}
-            onApplyDiscount={handleApplyDiscount}
-            onRemoveDiscount={handleRemoveDiscount}
-            onRecordPayment={handleRecordPayment}
-            onCloseSession={handleCloseSession}
-            onMoveSession={handleMoveSession}
-            onAddOrderFromCounter={handleAddOrderFromCounter}
-          />
-        )
+        <CounterConsole
+          bills={bills}
+          tables={tables}
+          orders={orders}
+          menuItems={menuItems}
+          currentUser={currentUser}
+          onApplyDiscount={handleApplyDiscount}
+          onRemoveDiscount={handleRemoveDiscount}
+          onRecordPayment={handleRecordPayment}
+          onCloseSession={handleCloseSession}
+          onMoveSession={handleMoveSession}
+          onAddOrderFromCounter={handleAddOrderFromCounter}
+        />
       )}
 
-      {/* VIEW: ADMINISTRATOR HUB */}
       {currentView === 'admin' && (
-        !currentUser ? (
-          <AccessDeniedView
-            currentUser={null}
-            attemptedView="admin"
-            onNavigatePermitted={() => setCurrentView('customer')}
-            onSwitchStaff={() => setCurrentView('staff_login')}
-            onReturnToCustomer={() => setCurrentView('customer')}
-          />
-        ) : !isViewPermitted('admin', currentUser) ? (
-          <AccessDeniedView
-            currentUser={currentUser}
-            attemptedView="admin"
-            onNavigatePermitted={() => setCurrentView(getPermittedViewForCurrentRole())}
-            onSwitchStaff={() => setCurrentView('staff_login')}
-            onReturnToCustomer={() => setCurrentView('customer')}
-          />
-        ) : (
-          <AdminHub
-            menuItems={menuItems}
-            categories={categories}
-            settings={settings}
-            currentUser={currentUser}
-            tables={tables}
-            onSaveMenuItem={handleSaveMenuItem}
-            onToggleAvailability={handleToggleAvailability}
-            onDeleteMenuItem={handleDeleteMenuItem}
-            onFetchReports={api.getReports}
-            onFetchAuditLogs={api.getAuditLogs}
-            onUpdateSettings={async (updates) => {
-              const res = await api.updateSettings(updates);
-              if (res.settings) setSettings(res.settings);
-            }}
-            onRefreshData={loadAllData}
-            onSelectTableForCustomerView={(tableId, token) => {
-              setCurrentTableId(tableId);
-              if (token) setCurrentTableToken(token);
-              setCurrentView('customer');
-              if (typeof window !== 'undefined') {
-                const tokenQuery = token ? `&token=${token}` : '';
-                window.history.pushState({}, '', `/menu?table=${tableId}${tokenQuery}`);
-              }
-            }}
-          />
-        )
+        <AdminHub
+          menuItems={menuItems}
+          categories={categories}
+          settings={settings}
+          currentUser={currentUser}
+          tables={tables}
+          onSaveMenuItem={handleSaveMenuItem}
+          onToggleAvailability={handleToggleAvailability}
+          onDeleteMenuItem={handleDeleteMenuItem}
+          onFetchReports={api.getReports}
+          onFetchAuditLogs={api.getAuditLogs}
+          onUpdateSettings={async updates => {
+            const res = await api.updateSettings(updates);
+            if (res.settings) setSettings(res.settings);
+          }}
+          onRefreshData={loadStaffData}
+          onSelectTableForCustomerView={(tableId, token) => {
+            setAttemptedTableId(tableId);
+            setCurrentTableToken(token || null);
+            setCurrentView('customer');
+            if (typeof window !== 'undefined') {
+              const tokenQuery = token ? `&token=${encodeURIComponent(token)}` : '';
+              window.history.pushState({}, '', `/menu?table=${encodeURIComponent(tableId)}${tokenQuery}`);
+            }
+          }}
+        />
       )}
 
-      {/* VIEW: TABLES & QR MANAGEMENT */}
       {currentView === 'tables' && (
-        !currentUser ? (
-          <AccessDeniedView
-            currentUser={null}
-            attemptedView="tables"
-            onNavigatePermitted={() => setCurrentView('customer')}
-            onSwitchStaff={() => setCurrentView('staff_login')}
-            onReturnToCustomer={() => setCurrentView('customer')}
-          />
-        ) : !isViewPermitted('tables', currentUser) ? (
-          <AccessDeniedView
-            currentUser={currentUser}
-            attemptedView="tables"
-            onNavigatePermitted={() => setCurrentView(getPermittedViewForCurrentRole())}
-            onSwitchStaff={() => setCurrentView('staff_login')}
-            onReturnToCustomer={() => setCurrentView('customer')}
-          />
-        ) : (
-          <TableQRManagement
-            onSelectTableForCustomerView={(tableId, token) => {
-              setCurrentTableId(tableId);
-              if (token) setCurrentTableToken(token);
-              setCurrentView('customer');
-              if (typeof window !== 'undefined') {
-                const tokenQuery = token ? `&token=${token}` : '';
-                window.history.pushState({}, '', `/menu?table=${tableId}${tokenQuery}`);
-              }
-            }}
-            onRefreshData={loadAllData}
-          />
-        )
+        <TableQRManagement
+          onSelectTableForCustomerView={(tableId, token) => {
+            setAttemptedTableId(tableId);
+            setCurrentTableToken(token || null);
+            setCurrentView('customer');
+            if (typeof window !== 'undefined') {
+              const tokenQuery = token ? `&token=${encodeURIComponent(token)}` : '';
+              window.history.pushState({}, '', `/menu?table=${encodeURIComponent(tableId)}${tokenQuery}`);
+            }
+          }}
+          onRefreshData={loadStaffData}
+        />
       )}
 
-      {/* Acceptance Test Runner Modal */}
-      <AcceptanceTestModal
-        isOpen={isTestModalOpen}
-        onClose={() => setIsTestModalOpen(false)}
-        onRefreshAllData={loadAllData}
-      />
+      {(currentUser.role === 'admin' || currentUser.role === 'manager') && (
+        <AcceptanceTestModal
+          isOpen={isTestModalOpen}
+          onClose={() => setIsTestModalOpen(false)}
+          onRefreshAllData={loadStaffData}
+        />
+      )}
     </div>
   );
 }
