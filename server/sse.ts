@@ -1,13 +1,16 @@
-import { Response } from 'express';
-import { Role } from '../src/types/index.ts';
+import type { Response } from 'express';
+import type { Role } from '../src/types/index.ts';
 
 export interface SSEClient {
   id: string;
   res: Response;
   isStaff: boolean;
   staffRole?: Role;
+  staffToken?: string;
+  staffUserId?: string;
   isVerifiedTableGuest: boolean;
   verifiedTableId?: string;
+  trackingTokens: Set<string>;
 }
 
 class SSEHub {
@@ -17,7 +20,7 @@ class SSEHub {
     // Keepalive ping every 25 seconds
     setInterval(() => {
       this.broadcastPublic('ping', { timestamp: Date.now() });
-    }, 25000);
+    }, 25000).unref();
   }
 
   addClient(
@@ -26,8 +29,11 @@ class SSEHub {
     options: {
       isStaff?: boolean;
       staffRole?: Role;
+      staffToken?: string;
+      staffUserId?: string;
       isVerifiedTableGuest?: boolean;
       verifiedTableId?: string;
+      trackingTokens?: string[];
     } = {}
   ) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -36,26 +42,68 @@ class SSEHub {
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
+    const cleanTokens = (options.trackingTokens || [])
+      .map(t => t.trim())
+      .filter(t => t.startsWith('trk_') && t.length >= 16)
+      .slice(0, 25);
+
     const client: SSEClient = {
       id,
       res,
       isStaff: Boolean(options.isStaff),
       staffRole: options.staffRole,
+      staffToken: options.staffToken,
+      staffUserId: options.staffUserId,
       isVerifiedTableGuest: Boolean(options.isVerifiedTableGuest),
-      verifiedTableId: options.verifiedTableId
+      verifiedTableId: options.verifiedTableId,
+      trackingTokens: new Set(cleanTokens)
     };
 
     this.clients.set(id, client);
 
     this.sendToClient(id, 'connected', {
       clientId: id,
-      scope: client.isStaff ? 'staff' : client.isVerifiedTableGuest ? 'table_guest' : 'public_menu',
+      scope: client.isStaff
+        ? 'staff'
+        : client.isVerifiedTableGuest
+        ? 'table_guest'
+        : client.trackingTokens.size > 0
+        ? 'anonymous_order_tracker'
+        : 'public_menu',
       timestamp: Date.now()
     });
 
     res.on('close', () => {
       this.clients.delete(id);
     });
+  }
+
+  disconnectByToken(staffToken: string) {
+    if (!staffToken) return;
+    for (const [id, client] of this.clients.entries()) {
+      if (client.staffToken === staffToken) {
+        try {
+          client.res.end();
+        } catch {
+          // ignore
+        }
+        this.clients.delete(id);
+      }
+    }
+  }
+
+  disconnectByUserId(userId: string) {
+    if (!userId) return;
+    for (const [id, client] of this.clients.entries()) {
+      if (client.staffUserId === userId) {
+        try {
+          client.res.end();
+        } catch {
+          // ignore
+        }
+        this.clients.delete(id);
+      }
+    }
   }
 
   sendToClient(clientId: string, event: string, data: any) {
@@ -102,9 +150,17 @@ class SSEHub {
   }
 
   /**
-   * Broadcast full operational payload to staff, and strictly table-scoped sanitized payload ONLY to verified guests at that specific table
+   * Broadcast full operational payload to staff, and strictly scoped sanitized payload ONLY to:
+   * 1) Verified table QR guests at that specific dine-in table (never shared TAKEAWAY!), OR
+   * 2) The anonymous client holding the cryptographic per-order trackingToken
    */
-  broadcastToTableAndStaff(tableId: string, event: string, staffData: any, guestData: any) {
+  broadcastToTableAndStaff(
+    tableId: string,
+    event: string,
+    staffData: any,
+    guestData: any,
+    orderTrackingToken?: string
+  ) {
     const staffPayload = `event: ${event}\ndata: ${JSON.stringify(staffData)}\n\n`;
     const guestPayload = `event: ${event}\ndata: ${JSON.stringify(guestData)}\n\n`;
 
@@ -112,7 +168,10 @@ class SSEHub {
       try {
         if (client.isStaff) {
           client.res.write(staffPayload);
-        } else if (client.isVerifiedTableGuest && client.verifiedTableId === tableId) {
+        } else if (
+          (tableId !== 'TAKEAWAY' && client.isVerifiedTableGuest && client.verifiedTableId === tableId) ||
+          (orderTrackingToken && client.trackingTokens.has(orderTrackingToken))
+        ) {
           client.res.write(guestPayload);
         }
       } catch {

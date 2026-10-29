@@ -17,7 +17,7 @@
     {
       "id": "usr_admin",
       "username": "admin",
-      "name": "Dechen Wangchuk (General Manager)",
+      "name": "Dechen Wangchuk (System Administrator)",
       "role": "admin",
       "active": true,
       "pin": "1234"
@@ -41,7 +41,7 @@
     {
       "id": "usr_manager",
       "username": "manager",
-      "name": "Karma Tshering (Floor Manager)",
+      "name": "Karma Tshering (GM · General Manager)",
       "role": "manager",
       "active": true,
       "pin": "4567"
@@ -1858,6 +1858,78 @@
         "ord_1792987706987_ht4"
       ],
       "billId": "bill_1792485197443"
+    },
+    {
+      "id": "ses_anon_1792990165593_0c655841",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Pickup",
+      "status": "active",
+      "startedAt": "2026-10-26T04:49:25.593Z",
+      "guestCount": 1,
+      "orderRoundIds": [
+        "ord_1792990165593_5d93c4"
+      ],
+      "billId": "bill_1792990165593_3b00"
+    },
+    {
+      "id": "ses_anon_1792990165600_db12a051",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Pickup",
+      "status": "active",
+      "startedAt": "2026-10-26T04:49:25.600Z",
+      "guestCount": 1,
+      "orderRoundIds": [
+        "ord_1792990165600_d89ec0"
+      ],
+      "billId": "bill_1792990165601_6aa8"
+    },
+    {
+      "id": "ses_anon_1792990287340_838fb554",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Pickup",
+      "status": "active",
+      "startedAt": "2026-10-26T04:51:27.341Z",
+      "guestCount": 1,
+      "orderRoundIds": [
+        "ord_1792990287341_f5ca98"
+      ],
+      "billId": "bill_1792990287341_0bfe"
+    },
+    {
+      "id": "ses_anon_1792990287349_707e8787",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Pickup",
+      "status": "active",
+      "startedAt": "2026-10-26T04:51:27.349Z",
+      "guestCount": 1,
+      "orderRoundIds": [
+        "ord_1792990287349_99b2d1"
+      ],
+      "billId": "bill_1792990287349_033e"
+    },
+    {
+      "id": "ses_anon_1792990349989_1bcfa754",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Pickup",
+      "status": "active",
+      "startedAt": "2026-10-26T04:52:29.989Z",
+      "guestCount": 1,
+      "orderRoundIds": [
+        "ord_1792990349989_dfb3de"
+      ],
+      "billId": "bill_1792990349989_157c"
+    },
+    {
+      "id": "ses_anon_1792990349999_afbe497c",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Pickup",
+      "status": "active",
+      "startedAt": "2026-10-26T04:52:29.999Z",
+      "guestCount": 1,
+      "orderRoundIds": [
+        "ord_1792990349999_d68543"
+      ],
+      "billId": "bill_1792990349999_e49e"
     }
   ],
   "orderRounds": [
@@ -1915,7 +1987,9 @@
       "status": "submitted",
       "createdAt": "2026-10-20T08:33:17.443Z",
       "updatedAt": "2026-10-20T08:33:17.443Z",
-      "customerNote": "Guest table order"
+      "customerNote": "Guest table order",
+      "trackingToken": "trk_88946d4fd371126136b014426ac47c229144be8826f32d32",
+      "anonymousLabel": "Anonymous Guest"
     },
     {
       "id": "ord_1792729833802_xwv",
@@ -1949,7 +2023,9 @@
       "subtotal": 180,
       "status": "ready",
       "createdAt": "2026-10-23T04:30:33.802Z",
-      "updatedAt": "2026-10-23T04:30:33.826Z"
+      "updatedAt": "2026-10-23T04:30:33.826Z",
+      "trackingToken": "trk_a136f5b8496a078bdfb874046e93a39b4ed6aafc62d95b4a",
+      "anonymousLabel": "Anonymous Guest"
     },
     {
       "id": "ord_1792743400498_oq7",
@@ -1984,7 +2060,9 @@
       "status": "submitted",
       "createdAt": "2026-10-23T08:16:40.498Z",
       "updatedAt": "2026-10-23T08:16:40.498Z",
-      "customerNote": "Real QR scan test"
+      "customerNote": "Real QR scan test",
+      "trackingToken": "trk_c5e999ff7e8e183dc799d1c77254c41ff9a765b86d1418a4",
+      "anonymousLabel": "Anonymous Guest"
     },
     {
       "id": "ord_1792745857810_esb",
@@ -2011,7 +2089,9 @@
       "status": "submitted",
       "createdAt": "2026-10-23T08:57:37.810Z",
       "updatedAt": "2026-10-23T08:57:37.810Z",
-      "idempotencyKey": "test_valid_tok_order_2"
+      "idempotencyKey": "test_valid_tok_order_2",
+      "trackingToken": "trk_c85f6ed1ca3d0460f6be1d5f9ca3efa61df477ef6c29ecc7",
+      "anonymousLabel": "Anonymous Guest"
     },
     {
       "id": "ord_1792987706987_ht4",
@@ -2045,7 +2125,240 @@
       "subtotal": 360,
       "status": "submitted",
       "createdAt": "2026-10-26T04:08:26.987Z",
-      "updatedAt": "2026-10-26T04:08:26.987Z"
+      "updatedAt": "2026-10-26T04:08:26.987Z",
+      "trackingToken": "trk_4958a66d443d777ff0d79f1aee4c5cc5453ddca8390692da",
+      "anonymousLabel": "Anonymous Guest"
+    },
+    {
+      "id": "ord_1792990165593_5d93c4",
+      "orderNumber": "#HQC-ANON-559397",
+      "sessionId": "ses_anon_1792990165593_0c655841",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Counter Pickup",
+      "orderMode": "anonymous_pickup",
+      "anonymousLabel": "Anonymous Guest",
+      "roundNumber": 1,
+      "items": [
+        {
+          "id": "oi_1792990165593_ztj3",
+          "cartItemId": "ci_1792990165593",
+          "menuItemId": "item_suja_shamdray",
+          "name": "SUJA-SHAMDRAY",
+          "basePrice": 180,
+          "unitPrice": 180,
+          "quantity": 1,
+          "dietType": "veg",
+          "customizations": [
+            {
+              "groupId": "grp_suja_spice",
+              "groupName": "Spice Level",
+              "optionId": "opt_mild",
+              "optionName": "Mild Flavor",
+              "priceModifier": 0
+            }
+          ],
+          "imageUrl": "/src/assets/images/dish_ema_datshi_1792466932457.jpg",
+          "kitchenStatus": "pending"
+        }
+      ],
+      "subtotal": 180,
+      "status": "submitted",
+      "createdAt": "2026-10-26T04:49:25.593Z",
+      "updatedAt": "2026-10-26T04:49:25.593Z",
+      "customerNote": "Extra chili",
+      "trackingToken": "trk_19c7db2e2b58d99a3e8afe16d1ae9d5f31685ba6fe03891f"
+    },
+    {
+      "id": "ord_1792990165600_d89ec0",
+      "orderNumber": "#HQC-ANON-560012",
+      "sessionId": "ses_anon_1792990165600_db12a051",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Counter Pickup",
+      "orderMode": "anonymous_pickup",
+      "anonymousLabel": "Anonymous Guest",
+      "roundNumber": 1,
+      "items": [
+        {
+          "id": "oi_1792990165600_s3lv",
+          "cartItemId": "ci_1792990165600",
+          "menuItemId": "item_suja_shamdray",
+          "name": "SUJA-SHAMDRAY",
+          "basePrice": 180,
+          "unitPrice": 180,
+          "quantity": 2,
+          "dietType": "veg",
+          "customizations": [
+            {
+              "groupId": "grp_suja_spice",
+              "groupName": "Spice Level",
+              "optionId": "opt_mild",
+              "optionName": "Mild Flavor",
+              "priceModifier": 0
+            }
+          ],
+          "imageUrl": "/src/assets/images/dish_ema_datshi_1792466932457.jpg",
+          "kitchenStatus": "pending"
+        }
+      ],
+      "subtotal": 360,
+      "status": "submitted",
+      "createdAt": "2026-10-26T04:49:25.600Z",
+      "updatedAt": "2026-10-26T04:49:25.600Z",
+      "trackingToken": "trk_b030732fbcd81f8edddda9d145d49dbb9b0b72f946a261d4"
+    },
+    {
+      "id": "ord_1792990287341_f5ca98",
+      "orderNumber": "#HQC-ANON-734155",
+      "sessionId": "ses_anon_1792990287340_838fb554",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Counter Pickup",
+      "orderMode": "anonymous_pickup",
+      "anonymousLabel": "Anonymous Guest",
+      "roundNumber": 1,
+      "items": [
+        {
+          "id": "oi_1792990287340_bgyq",
+          "cartItemId": "ci_1792990287340",
+          "menuItemId": "item_suja_shamdray",
+          "name": "SUJA-SHAMDRAY",
+          "basePrice": 180,
+          "unitPrice": 180,
+          "quantity": 1,
+          "dietType": "veg",
+          "customizations": [
+            {
+              "groupId": "grp_suja_spice",
+              "groupName": "Spice Level",
+              "optionId": "opt_mild",
+              "optionName": "Mild Flavor",
+              "priceModifier": 0
+            }
+          ],
+          "imageUrl": "/src/assets/images/dish_ema_datshi_1792466932457.jpg",
+          "kitchenStatus": "preparing"
+        }
+      ],
+      "subtotal": 180,
+      "status": "preparing",
+      "createdAt": "2026-10-26T04:51:27.341Z",
+      "updatedAt": "2026-10-26T04:51:27.387Z",
+      "customerNote": "Extra chili",
+      "trackingToken": "trk_0a4b799290bf8a079fa2e6b8a8eea7700fa35b8ed36d20a8"
+    },
+    {
+      "id": "ord_1792990287349_99b2d1",
+      "orderNumber": "#HQC-ANON-734990",
+      "sessionId": "ses_anon_1792990287349_707e8787",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Counter Pickup",
+      "orderMode": "anonymous_pickup",
+      "anonymousLabel": "Anonymous Guest",
+      "roundNumber": 1,
+      "items": [
+        {
+          "id": "oi_1792990287348_d2sh",
+          "cartItemId": "ci_1792990287349",
+          "menuItemId": "item_suja_shamdray",
+          "name": "SUJA-SHAMDRAY",
+          "basePrice": 180,
+          "unitPrice": 180,
+          "quantity": 2,
+          "dietType": "veg",
+          "customizations": [
+            {
+              "groupId": "grp_suja_spice",
+              "groupName": "Spice Level",
+              "optionId": "opt_mild",
+              "optionName": "Mild Flavor",
+              "priceModifier": 0
+            }
+          ],
+          "imageUrl": "/src/assets/images/dish_ema_datshi_1792466932457.jpg",
+          "kitchenStatus": "pending"
+        }
+      ],
+      "subtotal": 360,
+      "status": "submitted",
+      "createdAt": "2026-10-26T04:51:27.349Z",
+      "updatedAt": "2026-10-26T04:51:27.349Z",
+      "trackingToken": "trk_60ffb3f17753daddcdecdf30b131d01a45d04ad104356550"
+    },
+    {
+      "id": "ord_1792990349989_dfb3de",
+      "orderNumber": "#HQC-ANON-998994",
+      "sessionId": "ses_anon_1792990349989_1bcfa754",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Counter Pickup",
+      "orderMode": "anonymous_pickup",
+      "anonymousLabel": "Anonymous Guest",
+      "roundNumber": 1,
+      "items": [
+        {
+          "id": "oi_1792990349989_apcr",
+          "cartItemId": "ci_1792990349989",
+          "menuItemId": "item_suja_shamdray",
+          "name": "SUJA-SHAMDRAY",
+          "basePrice": 180,
+          "unitPrice": 180,
+          "quantity": 1,
+          "dietType": "veg",
+          "customizations": [
+            {
+              "groupId": "grp_suja_spice",
+              "groupName": "Spice Level",
+              "optionId": "opt_mild",
+              "optionName": "Mild Flavor",
+              "priceModifier": 0
+            }
+          ],
+          "imageUrl": "/src/assets/images/dish_ema_datshi_1792466932457.jpg",
+          "kitchenStatus": "preparing"
+        }
+      ],
+      "subtotal": 180,
+      "status": "served",
+      "createdAt": "2026-10-26T04:52:29.989Z",
+      "updatedAt": "2026-10-26T04:52:30.074Z",
+      "customerNote": "Extra chili",
+      "trackingToken": "trk_d2e8dde3afd8ce5574ee56d0a5654ab7ad25f180352e63f2"
+    },
+    {
+      "id": "ord_1792990349999_d68543",
+      "orderNumber": "#HQC-ANON-999969",
+      "sessionId": "ses_anon_1792990349999_afbe497c",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Counter Pickup",
+      "orderMode": "anonymous_pickup",
+      "anonymousLabel": "Anonymous Guest",
+      "roundNumber": 1,
+      "items": [
+        {
+          "id": "oi_1792990349999_ycsp",
+          "cartItemId": "ci_1792990349999",
+          "menuItemId": "item_suja_shamdray",
+          "name": "SUJA-SHAMDRAY",
+          "basePrice": 180,
+          "unitPrice": 180,
+          "quantity": 2,
+          "dietType": "veg",
+          "customizations": [
+            {
+              "groupId": "grp_suja_spice",
+              "groupName": "Spice Level",
+              "optionId": "opt_mild",
+              "optionName": "Mild Flavor",
+              "priceModifier": 0
+            }
+          ],
+          "imageUrl": "/src/assets/images/dish_ema_datshi_1792466932457.jpg",
+          "kitchenStatus": "pending"
+        }
+      ],
+      "subtotal": 360,
+      "status": "served",
+      "createdAt": "2026-10-26T04:52:29.999Z",
+      "updatedAt": "2026-10-26T04:52:30.078Z",
+      "trackingToken": "trk_40863538d661d02febac959f7fdba82c91eeb988af4281e4"
     }
   ],
   "bills": [
@@ -2075,9 +2388,263 @@
       "status": "open",
       "payments": [],
       "createdAt": "2026-10-20T08:33:17.443Z"
+    },
+    {
+      "id": "bill_1792990165593_3b00",
+      "billNumber": "INV-165593",
+      "sessionId": "ses_anon_1792990165593_0c655841",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Pickup (#HQC-ANON-559397)",
+      "orderRoundIds": [
+        "ord_1792990165593_5d93c4"
+      ],
+      "subtotal": 180,
+      "discount": null,
+      "taxRate": 0.05,
+      "taxAmount": 9,
+      "serviceChargeRate": 0.1,
+      "serviceChargeAmount": 18,
+      "additionalCharges": 0,
+      "total": 207,
+      "paidAmount": 0,
+      "balanceDue": 207,
+      "status": "open",
+      "payments": [],
+      "createdAt": "2026-10-26T04:49:25.593Z"
+    },
+    {
+      "id": "bill_1792990165601_6aa8",
+      "billNumber": "INV-165601",
+      "sessionId": "ses_anon_1792990165600_db12a051",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Pickup (#HQC-ANON-560012)",
+      "orderRoundIds": [
+        "ord_1792990165600_d89ec0"
+      ],
+      "subtotal": 360,
+      "discount": null,
+      "taxRate": 0.05,
+      "taxAmount": 18,
+      "serviceChargeRate": 0.1,
+      "serviceChargeAmount": 36,
+      "additionalCharges": 0,
+      "total": 414,
+      "paidAmount": 0,
+      "balanceDue": 414,
+      "status": "open",
+      "payments": [],
+      "createdAt": "2026-10-26T04:49:25.601Z"
+    },
+    {
+      "id": "bill_1792990287341_0bfe",
+      "billNumber": "INV-287341",
+      "sessionId": "ses_anon_1792990287340_838fb554",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Pickup (#HQC-ANON-734155)",
+      "orderRoundIds": [
+        "ord_1792990287341_f5ca98"
+      ],
+      "subtotal": 180,
+      "discount": null,
+      "taxRate": 0.05,
+      "taxAmount": 9,
+      "serviceChargeRate": 0.1,
+      "serviceChargeAmount": 18,
+      "additionalCharges": 0,
+      "total": 207,
+      "paidAmount": 0,
+      "balanceDue": 207,
+      "status": "open",
+      "payments": [],
+      "createdAt": "2026-10-26T04:51:27.341Z"
+    },
+    {
+      "id": "bill_1792990287349_033e",
+      "billNumber": "INV-287349",
+      "sessionId": "ses_anon_1792990287349_707e8787",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Pickup (#HQC-ANON-734990)",
+      "orderRoundIds": [
+        "ord_1792990287349_99b2d1"
+      ],
+      "subtotal": 360,
+      "discount": null,
+      "taxRate": 0.05,
+      "taxAmount": 18,
+      "serviceChargeRate": 0.1,
+      "serviceChargeAmount": 36,
+      "additionalCharges": 0,
+      "total": 414,
+      "paidAmount": 0,
+      "balanceDue": 414,
+      "status": "open",
+      "payments": [],
+      "createdAt": "2026-10-26T04:51:27.349Z"
+    },
+    {
+      "id": "bill_1792990349989_157c",
+      "billNumber": "INV-349989",
+      "sessionId": "ses_anon_1792990349989_1bcfa754",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Pickup (#HQC-ANON-998994)",
+      "orderRoundIds": [
+        "ord_1792990349989_dfb3de"
+      ],
+      "subtotal": 180,
+      "discount": null,
+      "taxRate": 0.05,
+      "taxAmount": 9,
+      "serviceChargeRate": 0.1,
+      "serviceChargeAmount": 18,
+      "additionalCharges": 0,
+      "total": 207,
+      "paidAmount": 0,
+      "balanceDue": 207,
+      "status": "open",
+      "payments": [],
+      "createdAt": "2026-10-26T04:52:29.989Z"
+    },
+    {
+      "id": "bill_1792990349999_e49e",
+      "billNumber": "INV-349999",
+      "sessionId": "ses_anon_1792990349999_afbe497c",
+      "tableId": "TAKEAWAY",
+      "tableNumber": "Anonymous Pickup (#HQC-ANON-999969)",
+      "orderRoundIds": [
+        "ord_1792990349999_d68543"
+      ],
+      "subtotal": 360,
+      "discount": null,
+      "taxRate": 0.05,
+      "taxAmount": 18,
+      "serviceChargeRate": 0.1,
+      "serviceChargeAmount": 36,
+      "additionalCharges": 0,
+      "total": 414,
+      "paidAmount": 0,
+      "balanceDue": 414,
+      "status": "open",
+      "payments": [],
+      "createdAt": "2026-10-26T04:52:29.999Z"
     }
   ],
   "auditLogs": [
+    {
+      "id": "aud_1792990350078_cur",
+      "action": "ORDER_STATUS_UPDATE",
+      "category": "order",
+      "details": "Order #HQC-ANON-999969 changed from submitted to served",
+      "performedBy": "Dechen Wangchuk (System Administrator)",
+      "timestamp": "2026-10-26T04:52:30.078Z"
+    },
+    {
+      "id": "aud_1792990350074_9pu",
+      "action": "ORDER_STATUS_UPDATE",
+      "category": "order",
+      "details": "Order #HQC-ANON-998994 changed from preparing to served",
+      "performedBy": "Dechen Wangchuk (System Administrator)",
+      "timestamp": "2026-10-26T04:52:30.074Z"
+    },
+    {
+      "id": "aud_1792990350054_xge",
+      "action": "ORDER_STATUS_UPDATE",
+      "category": "order",
+      "details": "Order #HQC-ANON-998994 changed from submitted to preparing",
+      "performedBy": "Karma Tshering (GM · General Manager)",
+      "timestamp": "2026-10-26T04:52:30.054Z"
+    },
+    {
+      "id": "aud_1792990350000_auy",
+      "action": "ORDER_PLACED",
+      "category": "order",
+      "details": "Anonymous order #HQC-ANON-999969 placed (Anonymous Counter Pickup, Round 1): 1 items, subtotal Nu. 360",
+      "performedBy": "Anonymous Guest (Zero PII)",
+      "timestamp": "2026-10-26T04:52:30.000Z",
+      "metadata": {
+        "orderId": "ord_1792990349999_d68543",
+        "tableId": "TAKEAWAY",
+        "orderMode": "anonymous_pickup",
+        "subtotal": 360
+      }
+    },
+    {
+      "id": "aud_1792990349991_g91",
+      "action": "ORDER_PLACED",
+      "category": "order",
+      "details": "Anonymous order #HQC-ANON-998994 placed (Anonymous Counter Pickup, Round 1): 1 items, subtotal Nu. 180",
+      "performedBy": "Anonymous Guest (Zero PII)",
+      "timestamp": "2026-10-26T04:52:29.991Z",
+      "metadata": {
+        "orderId": "ord_1792990349989_dfb3de",
+        "tableId": "TAKEAWAY",
+        "orderMode": "anonymous_pickup",
+        "subtotal": 180
+      }
+    },
+    {
+      "id": "aud_1792990287388_tyb",
+      "action": "ORDER_STATUS_UPDATE",
+      "category": "order",
+      "details": "Order #HQC-ANON-734155 changed from submitted to preparing",
+      "performedBy": "Karma Tshering (GM · General Manager)",
+      "timestamp": "2026-10-26T04:51:27.388Z"
+    },
+    {
+      "id": "aud_1792990287350_fc4",
+      "action": "ORDER_PLACED",
+      "category": "order",
+      "details": "Anonymous order #HQC-ANON-734990 placed (Anonymous Counter Pickup, Round 1): 1 items, subtotal Nu. 360",
+      "performedBy": "Anonymous Guest (Zero PII)",
+      "timestamp": "2026-10-26T04:51:27.350Z",
+      "metadata": {
+        "orderId": "ord_1792990287349_99b2d1",
+        "tableId": "TAKEAWAY",
+        "orderMode": "anonymous_pickup",
+        "subtotal": 360
+      }
+    },
+    {
+      "id": "aud_1792990287342_56g",
+      "action": "ORDER_PLACED",
+      "category": "order",
+      "details": "Anonymous order #HQC-ANON-734155 placed (Anonymous Counter Pickup, Round 1): 1 items, subtotal Nu. 180",
+      "performedBy": "Anonymous Guest (Zero PII)",
+      "timestamp": "2026-10-26T04:51:27.342Z",
+      "metadata": {
+        "orderId": "ord_1792990287341_f5ca98",
+        "tableId": "TAKEAWAY",
+        "orderMode": "anonymous_pickup",
+        "subtotal": 180
+      }
+    },
+    {
+      "id": "aud_1792990165602_kyy",
+      "action": "ORDER_PLACED",
+      "category": "order",
+      "details": "Anonymous order #HQC-ANON-560012 placed (Anonymous Counter Pickup, Round 1): 1 items, subtotal Nu. 360",
+      "performedBy": "Anonymous Guest (Zero PII)",
+      "timestamp": "2026-10-26T04:49:25.602Z",
+      "metadata": {
+        "orderId": "ord_1792990165600_d89ec0",
+        "tableId": "TAKEAWAY",
+        "orderMode": "anonymous_pickup",
+        "subtotal": 360
+      }
+    },
+    {
+      "id": "aud_1792990165594_7cp",
+      "action": "ORDER_PLACED",
+      "category": "order",
+      "details": "Anonymous order #HQC-ANON-559397 placed (Anonymous Counter Pickup, Round 1): 1 items, subtotal Nu. 180",
+      "performedBy": "Anonymous Guest (Zero PII)",
+      "timestamp": "2026-10-26T04:49:25.594Z",
+      "metadata": {
+        "orderId": "ord_1792990165593_5d93c4",
+        "tableId": "TAKEAWAY",
+        "orderMode": "anonymous_pickup",
+        "subtotal": 180
+      }
+    },
     {
       "id": "aud_1792987706989_u3e",
       "action": "ORDER_PLACED",

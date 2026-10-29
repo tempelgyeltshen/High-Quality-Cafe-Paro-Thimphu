@@ -1,7 +1,7 @@
-import { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { db } from './db.ts';
-import { StaffUser, Role } from '../src/types/index.ts';
+import type { StaffUser, Role } from '../src/types/index.ts';
 
 // In-memory token store mapped to staff users with TTL
 interface ActiveToken {
@@ -26,6 +26,17 @@ export function createStaffToken(user: StaffUser): string {
 
 export function revokeStaffToken(token: string): void {
   tokens.delete(token);
+}
+
+export function revokeTokensForUser(userId: string): number {
+  let count = 0;
+  for (const [tok, session] of tokens.entries()) {
+    if (session.userId === userId) {
+      tokens.delete(tok);
+      count++;
+    }
+  }
+  return count;
 }
 
 export function verifyStaffToken(token: string): StaffUser | null {
@@ -101,6 +112,17 @@ interface RateBucket {
 }
 
 const rateBuckets = new Map<string, RateBucket>();
+
+// Periodically purge expired sessions and rate-limit buckets every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [tok, session] of tokens.entries()) {
+    if (now > session.expiresAt) tokens.delete(tok);
+  }
+  for (const [key, bucket] of rateBuckets.entries()) {
+    if (now > bucket.resetAt) rateBuckets.delete(key);
+  }
+}, 10 * 60 * 1000).unref();
 
 export function createRateLimiter(options: { scope: string; maxRequests: number; windowMs: number; message?: string }) {
   return (req: Request, res: Response, next: NextFunction) => {

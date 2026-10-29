@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   MenuItem,
   MenuCategory,
@@ -7,6 +7,8 @@ import {
   OrderRound,
   Bill,
   DiningSession,
+  OrderHistoryRecord,
+  OrderHistorySummary,
   OrderItemKitchenStatus,
   OrderStatus,
   PaymentMethod,
@@ -15,6 +17,7 @@ import {
 
 const TOKEN_KEY = 'hqc_staff_token';
 const USER_KEY = 'hqc_staff_user';
+const ANON_ORDER_TOKENS_KEY = 'hqc_anon_tracking_tokens';
 
 export function getStoredToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -38,6 +41,56 @@ export function setStoredAuth(token: string, user: StaffUser) {
 export function clearStoredAuth() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+}
+
+/**
+ * Privacy-preserving local order tracking keys:
+ * Stores ONLY random cryptographic trk_... tokens on this browser — zero personal identity.
+ */
+export function getStoredAnonymousOrderTokens(): string[] {
+  const raw = localStorage.getItem(ANON_ORDER_TOKENS_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((t): t is string => typeof t === 'string' && t.startsWith('trk_')).slice(0, 20);
+  } catch {
+    return [];
+  }
+}
+
+export function saveAnonymousOrderToken(trackingToken?: string | null): string[] {
+  if (!trackingToken || !trackingToken.startsWith('trk_')) {
+    return getStoredAnonymousOrderTokens();
+  }
+  const existing = getStoredAnonymousOrderTokens();
+  const updated = [trackingToken, ...existing.filter(t => t !== trackingToken)].slice(0, 20);
+  localStorage.setItem(ANON_ORDER_TOKENS_KEY, JSON.stringify(updated));
+  return updated;
+}
+
+export function clearAnonymousOrderTokens(): void {
+  localStorage.removeItem(ANON_ORDER_TOKENS_KEY);
+}
+
+export async function downloadProtectedCsv(endpoint: string, fallbackFilename: string): Promise<void> {
+  const token = getStoredToken();
+  const res = await fetch(endpoint, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {}
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || `Export failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fallbackFilename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
 }
 
 interface RequestOptions extends RequestInit {
@@ -96,8 +149,8 @@ export const api = {
     ),
 
   createGuestOrder: (payload: {
-    tableId: string;
-    tableToken: string;
+    tableId?: string;
+    tableToken?: string;
     items: Array<{
       menuItemId: string;
       quantity: number;
@@ -107,9 +160,16 @@ export const api = {
     customerNote?: string;
     idempotencyKey?: string;
   }) =>
-    request<{ success: boolean; order: OrderRound; bill: Bill; message: string }>('/api/orders', {
+    request<{ success: boolean; order: OrderRound; trackingToken?: string; bill: Bill; message: string }>('/api/orders', {
       method: 'POST',
       body: JSON.stringify(payload),
+      skipStaffAuth: true
+    }),
+
+  trackAnonymousOrders: (tokens: string[]) =>
+    request<{ orders: OrderRound[] }>('/api/orders/track', {
+      method: 'POST',
+      body: JSON.stringify({ tokens }),
       skipStaffAuth: true
     }),
 
@@ -282,6 +342,30 @@ export const api = {
       method: 'DELETE'
     }),
 
+  // Complete Order History (Strictly GM & Admin Only)
+  getCompleteOrderHistory: (filters?: {
+    status?: string;
+    tableId?: string;
+    search?: string;
+    dateRange?: string;
+  }) => {
+    const params = new URLSearchParams();
+    if (filters?.status && filters.status !== 'all') params.set('status', filters.status);
+    if (filters?.tableId && filters.tableId !== 'all') params.set('tableId', filters.tableId);
+    if (filters?.search?.trim()) params.set('search', filters.search.trim());
+    if (filters?.dateRange && filters.dateRange !== 'all') params.set('dateRange', filters.dateRange);
+    const qs = params.toString();
+    return request<{ orders: OrderHistoryRecord[]; summary: OrderHistorySummary }>(
+      `/api/admin/orders${qs ? `?${qs}` : ''}`
+    );
+  },
+
+  updateAdminOrderStatus: (orderId: string, status: OrderStatus) =>
+    request<{ success: boolean; order: OrderRound; bill: Bill | null }>(`/api/admin/orders/${encodeURIComponent(orderId)}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status })
+    }),
+
   getReports: () =>
     request<{
       summary: {
@@ -303,8 +387,10 @@ export const api = {
     }),
 };
 
+export type RealTimeConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disabled';
+
 /**
- * Scoped real-time SSE hook — strictly separates Guest vs. Authenticated Staff streams
+ * Scoped real-time SSE hook — strictly separates Guest / Anonymous Tracker vs. Authenticated Staff streams
  */
 export function useRealTimeEvents(
   onEvent?: (event: string, data: any) => void,
@@ -313,40 +399,92 @@ export function useRealTimeEvents(
     staffToken?: string | null;
     tableId?: string | null;
     tableToken?: string | null;
+    trackingTokensKey?: string;
+    onReconnect?: () => void;
   } = { scope: 'guest' }
 ) {
   const [isConnected, setIsConnected] = useState(false);
-  const { scope, staffToken, tableId, tableToken } = options;
+  const [connectionState, setConnectionState] = useState<RealTimeConnectionState>(
+    options.scope === 'disabled' ? 'disabled' : 'connecting'
+  );
+  const { scope, staffToken, tableId, tableToken, trackingTokensKey = '', onReconnect } = options;
+  const onEventRef = useRef(onEvent);
+  onEventRef.current = onEvent;
+  const onReconnectRef = useRef(onReconnect);
+  onReconnectRef.current = onReconnect;
 
   useEffect(() => {
     if (scope === 'disabled') {
       setIsConnected(false);
+      setConnectionState('disabled');
       return;
     }
     if (scope === 'staff' && !staffToken) {
       setIsConnected(false);
+      setConnectionState('disabled');
       return;
     }
 
     let eventSource: EventSource | null = null;
     let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+    let isDisposed = false;
+    let hadDisconnect = false;
+    let hasConnectedOnce = false;
+
+    setConnectionState('connecting');
 
     const params = new URLSearchParams();
     if (scope === 'staff' && staffToken) {
       params.set('staffToken', staffToken);
-    } else if (scope === 'guest' && tableId && tableToken) {
-      params.set('tableId', tableId);
-      params.set('tableToken', tableToken);
+    } else if (scope === 'guest') {
+      if (tableId && tableToken) {
+        params.set('tableId', tableId);
+        params.set('tableToken', tableToken);
+      }
+      if (trackingTokensKey) {
+        params.set('trackingTokens', trackingTokensKey);
+      }
     }
     const queryStr = params.toString();
     const url = `/api/events${queryStr ? `?${queryStr}` : ''}`;
 
+    const scheduleReconnect = () => {
+      if (isDisposed) return;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      reconnectTimeout = setTimeout(() => {
+        if (!isDisposed) connect();
+      }, 3000);
+    };
+
     const connect = () => {
+      if (isDisposed) return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        hadDisconnect = true;
+        setIsConnected(false);
+        setConnectionState('reconnecting');
+        scheduleReconnect();
+        return;
+      }
+
       try {
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+
         eventSource = new EventSource(url);
 
         eventSource.onopen = () => {
+          if (isDisposed) return;
           setIsConnected(true);
+          setConnectionState('connected');
+          if (hadDisconnect && hasConnectedOnce) {
+            hadDisconnect = false;
+            onReconnectRef.current?.();
+          } else {
+            hadDisconnect = false;
+          }
+          hasConnectedOnce = true;
         };
 
         const eventNames = [
@@ -369,7 +507,7 @@ export function useRealTimeEvents(
           eventSource?.addEventListener(name, (e: MessageEvent) => {
             try {
               const data = JSON.parse(e.data);
-              onEvent?.(name, data);
+              onEventRef.current?.(name, data);
             } catch (err) {
               console.error('Failed to parse SSE payload', err);
             }
@@ -377,23 +515,58 @@ export function useRealTimeEvents(
         });
 
         eventSource.onerror = () => {
+          if (isDisposed) return;
+          hadDisconnect = true;
           setIsConnected(false);
+          setConnectionState('reconnecting');
           eventSource?.close();
-          reconnectTimeout = setTimeout(connect, 3000);
+          eventSource = null;
+          scheduleReconnect();
         };
       } catch {
+        if (isDisposed) return;
+        hadDisconnect = true;
         setIsConnected(false);
-        reconnectTimeout = setTimeout(connect, 3000);
+        setConnectionState('reconnecting');
+        scheduleReconnect();
       }
     };
+
+    const handleOffline = () => {
+      if (isDisposed) return;
+      hadDisconnect = true;
+      setIsConnected(false);
+      setConnectionState('reconnecting');
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+    };
+
+    const handleOnline = () => {
+      if (isDisposed) return;
+      hadDisconnect = true;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      connect();
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('offline', handleOffline);
+      window.addEventListener('online', handleOnline);
+    }
 
     connect();
 
     return () => {
+      isDisposed = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('offline', handleOffline);
+        window.removeEventListener('online', handleOnline);
+      }
       if (eventSource) eventSource.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
-  }, [onEvent, scope, staffToken, tableId, tableToken]);
+  }, [scope, staffToken, tableId, tableToken, trackingTokensKey]);
 
-  return { isConnected };
+  return { isConnected, connectionState };
 }

@@ -1,19 +1,20 @@
-import { Router, Request, Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 import QRCode from 'qrcode';
 import { db } from './db.ts';
 import { sseHub } from './sse.ts';
 import {
   createStaffToken,
   revokeStaffToken,
+  revokeTokensForUser,
   verifyStaffToken,
   extractRawBearerToken,
   extractStaffFromRequest,
   requireRole,
   timingSafeTokenMatch,
   createRateLimiter,
-  AuthenticatedRequest
+  type AuthenticatedRequest
 } from './auth.ts';
-import {
+import type {
   MenuItem,
   PaymentMethod,
   RestaurantTable,
@@ -53,9 +54,12 @@ function sanitizeTableForGuest(table: RestaurantTable): Omit<RestaurantTable, 't
   };
 }
 
-function sanitizeOrderForGuest(order: OrderRound): Omit<OrderRound, 'idempotencyKey'> {
-  const { idempotencyKey: _idemp, ...safeOrder } = order;
-  return safeOrder;
+function sanitizeOrderForGuest(order: OrderRound): Omit<OrderRound, 'idempotencyKey' | 'trackingToken'> {
+  const { idempotencyKey: _idemp, trackingToken: _trk, ...safeOrder } = order;
+  return {
+    ...safeOrder,
+    anonymousLabel: order.anonymousLabel || 'Anonymous Guest'
+  };
 }
 
 function sanitizeBillForGuest(bill: Bill): Bill {
@@ -123,6 +127,32 @@ const staffLoginLimiter = createRateLimiter({
   message: 'Too many sign-in attempts. Please wait a few minutes before retrying.'
 });
 
+const orderTrackLimiter = createRateLimiter({
+  scope: 'order_track',
+  maxRequests: 40,
+  windowMs: 60 * 1000,
+  message: 'Too many order status lookups. Please wait a moment before refreshing.'
+});
+
+/**
+ * Protects exported CSV spreadsheets against formula injection (=, +, -, @, \t, \r)
+ * and properly escapes embedded double quotes.
+ */
+function csvSafeCell(value: unknown): string {
+  const raw = String(value ?? '');
+  const neutralized = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+  return `"${neutralized.replace(/"/g, '""')}"`;
+}
+
+// Lightweight public health check for deployment readiness probes (zero internal state leaked)
+apiRouter.get('/health', (_req: Request, res: Response) => {
+  res.json({
+    status: 'ok',
+    service: 'high-quality-cafe',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // ==========================================
 // 1. REAL-TIME SERVER-SENT EVENTS (ISOLATED)
 // ==========================================
@@ -138,15 +168,25 @@ apiRouter.get('/events', (req: Request, res: Response) => {
   if (staff) {
     sseHub.addClient(clientId, res, {
       isStaff: true,
-      staffRole: staff.role
+      staffRole: staff.role,
+      staffToken: rawStaffToken,
+      staffUserId: staff.id
     });
     return;
   }
 
-  // Otherwise verify table-scoped guest QR token if provided
+  // Otherwise verify table-scoped guest QR token and/or per-order anonymous tracking tokens
   const rawTableId = typeof req.query.tableId === 'string' ? req.query.tableId.trim().toUpperCase() : '';
   const rawTableToken = typeof req.query.tableToken === 'string' ? req.query.tableToken.trim() : '';
-  const table = rawTableId ? db.getTable(rawTableId) : null;
+  const rawTrackingTokens =
+    typeof req.query.trackingTokens === 'string'
+      ? req.query.trackingTokens
+          .split(',')
+          .map(t => t.trim())
+          .filter(Boolean)
+      : [];
+
+  const table = rawTableId && rawTableId !== 'TAKEAWAY' ? db.getTable(rawTableId) : null;
   const isVerifiedGuest = Boolean(
     table && table.tableToken && rawTableToken && timingSafeTokenMatch(rawTableToken, table.tableToken)
   );
@@ -154,7 +194,8 @@ apiRouter.get('/events', (req: Request, res: Response) => {
   sseHub.addClient(clientId, res, {
     isStaff: false,
     isVerifiedTableGuest: isVerifiedGuest,
-    verifiedTableId: isVerifiedGuest && table ? table.id : undefined
+    verifiedTableId: isVerifiedGuest && table ? table.id : undefined,
+    trackingTokens: rawTrackingTokens
   });
 });
 
@@ -233,7 +274,7 @@ apiRouter.get('/tables/:id', (req: Request, res: Response) => {
   });
 });
 
-// Get order rounds for the current active table session (Requires valid table QR token or staff auth)
+// Get order rounds for the current active dine-in table session (Requires valid dine-in table QR token or staff auth)
 apiRouter.get('/tables/:id/orders', (req: Request, res: Response) => {
   const tableId = String(req.params.id || '').trim().toUpperCase();
   const table = db.getTable(tableId);
@@ -242,6 +283,13 @@ apiRouter.get('/tables/:id/orders', (req: Request, res: Response) => {
   }
 
   const staff = extractStaffFromRequest(req);
+  // Privacy Guard: Never expose shared TAKEAWAY order queues to anonymous clients; takeaway orders use per-order trackingToken
+  if (!staff && tableId === 'TAKEAWAY') {
+    return res.status(403).json({
+      error: 'Forbidden: Anonymous pickup orders are privately isolated per customer and require your personal order tracking token.'
+    });
+  }
+
   if (!staff && !isTableGuestAuthorized(req, table)) {
     return res.status(403).json({
       error: 'Forbidden: Valid table QR token is required to view orders for this table.'
@@ -263,7 +311,7 @@ apiRouter.get('/tables/:id/orders', (req: Request, res: Response) => {
   const bill = db.getBillBySessionId(session.id);
 
   if (staff) {
-    return res.json({ session, rounds, bill });
+    return res.json({ session, rounds: rounds.map(sanitizeOrderForGuest), bill });
   }
 
   res.json({
@@ -280,7 +328,52 @@ apiRouter.get('/tables/:id/orders', (req: Request, res: Response) => {
   });
 });
 
-// Submit a new order round (Approved guest ordering endpoint with strict server-side validation)
+// Complete order history on /api/orders and /api/orders/history is STRICTLY restricted to GM (manager) and Admin
+apiRouter.get('/orders', requireRole(['manager', 'admin']), (req: AuthenticatedRequest, res: Response) => {
+  const history = db.getCompleteOrderHistory({
+    status: typeof req.query.status === 'string' ? req.query.status : undefined,
+    tableId: typeof req.query.tableId === 'string' ? req.query.tableId : undefined,
+    search: typeof req.query.search === 'string' ? req.query.search : undefined,
+    dateRange: typeof req.query.dateRange === 'string' ? req.query.dateRange : undefined
+  });
+  res.json(history);
+});
+
+apiRouter.get('/orders/history', requireRole(['manager', 'admin']), (req: AuthenticatedRequest, res: Response) => {
+  const history = db.getCompleteOrderHistory({
+    status: typeof req.query.status === 'string' ? req.query.status : undefined,
+    tableId: typeof req.query.tableId === 'string' ? req.query.tableId : undefined,
+    search: typeof req.query.search === 'string' ? req.query.search : undefined,
+    dateRange: typeof req.query.dateRange === 'string' ? req.query.dateRange : undefined
+  });
+  res.json(history);
+});
+
+// Private Anonymous Order Status Lookup (Requires cryptographic per-order trackingToken; zero enumeration allowed)
+apiRouter.post('/orders/track', orderTrackLimiter, (req: Request, res: Response) => {
+  const { tokens, trackingTokens, trackingToken } = req.body || {};
+  const rawArray = Array.isArray(tokens)
+    ? tokens
+    : Array.isArray(trackingTokens)
+    ? trackingTokens
+    : [];
+  const tokenList: string[] = rawArray.length > 0
+    ? rawArray.filter((t): t is string => typeof t === 'string')
+    : typeof trackingToken === 'string'
+    ? [trackingToken]
+    : [];
+
+  if (tokenList.length === 0) {
+    return res.json({ orders: [] });
+  }
+
+  const matched = db.getOrdersByTrackingTokens(tokenList);
+  res.json({
+    orders: matched.map(sanitizeOrderForGuest)
+  });
+});
+
+// Submit a new anonymous order round (Zero PII required; strict server-side item & price validation)
 apiRouter.post('/orders', guestOrderLimiter, (req: Request, res: Response) => {
   try {
     const staff = extractStaffFromRequest(req);
@@ -288,22 +381,23 @@ apiRouter.post('/orders', guestOrderLimiter, (req: Request, res: Response) => {
 
     if (!staff && !settings.allowGuestOrdering) {
       return res.status(403).json({
-        error: 'Guest self-ordering is currently disabled. Please place your order with café staff.'
+        error: 'Anonymous self-ordering is currently disabled. Please place your order with café staff.'
       });
     }
 
     const { tableId, items, customerNote, idempotencyKey } = req.body || {};
     const tableToken = extractTableToken(req);
 
-    if (!tableId || typeof tableId !== 'string') {
-      return res.status(400).json({ error: 'tableId is required' });
-    }
+    // Default to TAKEAWAY (Anonymous Counter Pickup) when no specific table QR was scanned
+    const effectiveTableId =
+      typeof tableId === 'string' && tableId.trim().length > 0 ? tableId.trim().toUpperCase() : 'TAKEAWAY';
+
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Order items array cannot be empty' });
     }
 
     const result = db.createOrderRound({
-      tableId,
+      tableId: effectiveTableId,
       tableToken: tableToken || undefined,
       requireValidTableToken: !staff,
       placedByStaffName: staff?.name,
@@ -312,26 +406,31 @@ apiRouter.post('/orders', guestOrderLimiter, (req: Request, res: Response) => {
       idempotencyKey
     });
 
-    // Scoped broadcast: full operational payload to staff, sanitized order status to verified table guest ONLY
+    const sanitizedOrder = sanitizeOrderForGuest(result.order);
+
+    // Scoped broadcast: operational payload (without trackingToken) to staff, sanitized order status to verified watcher ONLY
     sseHub.broadcastToTableAndStaff(
       result.order.tableId,
       'order_created',
       {
-        order: result.order,
+        order: sanitizedOrder,
         bill: result.bill,
         tableId: result.order.tableId
       },
       {
-        order: sanitizeOrderForGuest(result.order),
+        order: sanitizedOrder,
         tableId: result.order.tableId
-      }
+      },
+      result.order.trackingToken
     );
 
     res.status(201).json({
       success: true,
-      order: staff ? result.order : sanitizeOrderForGuest(result.order),
+      order: sanitizedOrder,
+      // Returned ONLY once to the placing anonymous client so their device can privately track their own order
+      trackingToken: result.order.trackingToken,
       bill: staff ? result.bill : sanitizeBillForGuest(result.bill),
-      message: `Order ${result.order.orderNumber} successfully placed for ${result.bill.tableNumber}!`
+      message: `Anonymous order ${result.order.orderNumber} confirmed!`
     });
   } catch (err: any) {
     const status = err.statusCode === 403 ? 403 : 400;
@@ -350,18 +449,23 @@ apiRouter.delete('/orders/:id', (_req: Request, res: Response) => {
   res.status(403).json({ error: 'Forbidden: Guests cannot cancel or delete orders.' });
 });
 
-// Get single order confirmation details (Strictly requires staff auth OR matching active table QR token)
+// Get single order confirmation details (Strictly requires GM/Admin auth, matching per-order trackingToken, or active dine-in table QR token)
 apiRouter.get('/orders/:id', (req: Request, res: Response) => {
   const staff = extractStaffFromRequest(req);
   const order = db.getOrderRound(req.params.id);
 
   if (!staff) {
-    const providedToken = extractTableToken(req);
-    if (!providedToken) {
-      return res.status(403).json({ error: 'Forbidden: Valid table QR token required to view order details.' });
+    const providedTrackingToken =
+      (typeof req.query.trackingToken === 'string' ? req.query.trackingToken.trim() : '') ||
+      (typeof req.headers['x-order-tracking-token'] === 'string' ? req.headers['x-order-tracking-token'].trim() : '');
+
+    if (providedTrackingToken && order?.trackingToken && timingSafeTokenMatch(providedTrackingToken, order.trackingToken)) {
+      return res.json(sanitizeOrderForGuest(order));
     }
-    if (!order) {
-      return res.status(403).json({ error: 'Forbidden: You do not have permission to view this order.' });
+
+    const providedTableToken = extractTableToken(req);
+    if (!providedTableToken || !order || order.tableId === 'TAKEAWAY') {
+      return res.status(403).json({ error: 'Forbidden: Valid order tracking token or table QR token required.' });
     }
     const table = db.getTable(order.tableId);
     const session = db.getSession(order.sessionId);
@@ -371,10 +475,19 @@ apiRouter.get('/orders/:id', (req: Request, res: Response) => {
     return res.json(sanitizeOrderForGuest(order));
   }
 
+  // Lower-privilege staff cannot inspect historical closed orders directly; complete history is GM & Admin only
+  if (staff.role !== 'manager' && staff.role !== 'admin') {
+    if (!order || order.status === 'served' || order.status === 'cancelled') {
+      return res.status(403).json({
+        error: 'Forbidden: Historical order records are restricted strictly to GM (General Manager) and Admin roles.'
+      });
+    }
+  }
+
   if (!order) {
     return res.status(404).json({ error: 'Order not found' });
   }
-  res.json(order);
+  res.json(sanitizeOrderForGuest(order));
 });
 
 // Get session details (Strictly requires staff auth OR matching active table QR token)
@@ -470,6 +583,7 @@ apiRouter.post('/auth/logout', (req: Request, res: Response) => {
   const rawToken = extractRawBearerToken(req);
   if (rawToken) {
     revokeStaffToken(rawToken);
+    sseHub.disconnectByToken(rawToken);
   }
   res.json({ success: true });
 });
@@ -499,9 +613,14 @@ apiRouter.get('/auth/staff-accounts', requireRole(['kitchen', 'cashier', 'manage
 // ==========================================
 apiRouter.use('/kitchen', requireRole(['kitchen', 'manager', 'admin']));
 
-apiRouter.get('/kitchen/tickets', requireRole(['kitchen', 'manager', 'admin']), (_req: AuthenticatedRequest, res: Response) => {
+apiRouter.get('/kitchen/tickets', requireRole(['kitchen', 'manager', 'admin']), (req: AuthenticatedRequest, res: Response) => {
   const allOrders = db.getAllOrderRounds();
-  res.json(allOrders);
+  // Kitchen Cook role only sees active unserved/uncancelled preparation tickets; Complete Order History is GM/Admin only
+  const scoped =
+    req.staff?.role === 'kitchen'
+      ? allOrders.filter(o => o.status !== 'served' && o.status !== 'cancelled')
+      : allOrders;
+  res.json(scoped.map(sanitizeOrderForGuest));
 });
 
 apiRouter.patch('/kitchen/orders/:orderId/items/:itemId', requireRole(['kitchen', 'manager', 'admin']), (req: AuthenticatedRequest, res: Response) => {
@@ -519,24 +638,26 @@ apiRouter.patch('/kitchen/orders/:orderId/items/:itemId', requireRole(['kitchen'
 
     const session = db.getSession(updatedOrder.sessionId);
     const bill = session?.billId ? db.recalculateBill(session.billId) : null;
+    const sanitizedOrder = sanitizeOrderForGuest(updatedOrder);
 
     sseHub.broadcastToTableAndStaff(
       updatedOrder.tableId,
       'item_status_updated',
       {
-        order: updatedOrder,
+        order: sanitizedOrder,
         bill,
         itemId: req.params.itemId,
         status
       },
       {
-        order: sanitizeOrderForGuest(updatedOrder),
+        order: sanitizedOrder,
         itemId: req.params.itemId,
         status
-      }
+      },
+      updatedOrder.trackingToken
     );
 
-    res.json({ success: true, order: updatedOrder, bill });
+    res.json({ success: true, order: sanitizedOrder, bill });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -548,21 +669,26 @@ apiRouter.patch('/kitchen/orders/:orderId/status', requireRole(['kitchen', 'mana
     const staffName = req.staff?.name || 'Kitchen Staff';
 
     const updatedOrder = db.updateOrderStatus(req.params.orderId, status, staffName);
+    const session = db.getSession(updatedOrder.sessionId);
+    const bill = session?.billId ? db.getBill(session.billId) : null;
+    const sanitizedOrder = sanitizeOrderForGuest(updatedOrder);
 
     sseHub.broadcastToTableAndStaff(
       updatedOrder.tableId,
       'order_status_updated',
       {
-        order: updatedOrder,
+        order: sanitizedOrder,
+        bill,
         status
       },
       {
-        order: sanitizeOrderForGuest(updatedOrder),
+        order: sanitizedOrder,
         status
-      }
+      },
+      updatedOrder.trackingToken
     );
 
-    res.json({ success: true, order: updatedOrder });
+    res.json({ success: true, order: sanitizedOrder, bill });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -573,14 +699,27 @@ apiRouter.patch('/kitchen/orders/:orderId/status', requireRole(['kitchen', 'mana
 // ==========================================
 apiRouter.use('/counter', requireRole(['cashier', 'manager', 'admin']));
 
-apiRouter.get('/counter/bills', requireRole(['cashier', 'manager', 'admin']), (_req: AuthenticatedRequest, res: Response) => {
-  const bills = db.getAllBills();
+apiRouter.get('/counter/bills', requireRole(['cashier', 'manager', 'admin']), (req: AuthenticatedRequest, res: Response) => {
+  const allBills = db.getAllBills();
   const tables = db.getTables().map(sanitizeTableForGuest);
-  const orders = db.getAllOrderRounds();
+  const allOrders = db.getAllOrderRounds();
+
+  // Counter Staff (cashier) only receives open/unsettled bills & active rounds; Complete Order History is GM & Admin only
+  if (req.staff?.role === 'cashier') {
+    const activeBills = allBills.filter(b => b.status !== 'paid' && b.status !== 'voided');
+    const activeRoundIds = new Set(activeBills.flatMap(b => b.orderRoundIds));
+    const activeOrders = allOrders.filter(o => activeRoundIds.has(o.id)).map(sanitizeOrderForGuest);
+    return res.json({
+      bills: activeBills,
+      tables,
+      orders: activeOrders
+    });
+  }
+
   res.json({
-    bills,
+    bills: allBills,
     tables,
-    orders
+    orders: allOrders.map(sanitizeOrderForGuest)
   });
 });
 
@@ -589,7 +728,15 @@ apiRouter.get('/counter/bills/:id', requireRole(['cashier', 'manager', 'admin'])
   if (!bill) {
     return res.status(404).json({ error: 'Bill not found' });
   }
-  const rounds = bill.orderRoundIds.map(id => db.getOrderRound(id)).filter(Boolean);
+  if (req.staff?.role === 'cashier' && (bill.status === 'paid' || bill.status === 'voided')) {
+    return res.status(403).json({
+      error: 'Forbidden: Settled historical bills and order archives are restricted to GM (General Manager) and Admin.'
+    });
+  }
+  const rounds = bill.orderRoundIds
+    .map(id => db.getOrderRound(id))
+    .filter((o): o is OrderRound => Boolean(o))
+    .map(sanitizeOrderForGuest);
   res.json({ bill, rounds });
 });
 
@@ -737,30 +884,105 @@ apiRouter.post('/counter/tables/:tableId/add-order', requireRole(['cashier', 'ma
       customerNote: note ? `[Added by Counter]: ${note}` : undefined
     });
 
+    const sanitizedOrder = sanitizeOrderForGuest(result.order);
+
     sseHub.broadcastToTableAndStaff(
       result.order.tableId,
       'order_created',
       {
-        order: result.order,
+        order: sanitizedOrder,
         bill: result.bill,
         tableId: result.order.tableId
       },
       {
-        order: sanitizeOrderForGuest(result.order),
+        order: sanitizedOrder,
         tableId: result.order.tableId
-      }
+      },
+      result.order.trackingToken
     );
 
-    res.status(201).json({ success: true, order: result.order, bill: result.bill });
+    res.status(201).json({ success: true, order: sanitizedOrder, bill: result.bill });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
 });
 
 // ==========================================
-// 6. MENU MANAGEMENT & ADMIN — PROTECTED
+// 6. COMPLETE ORDER HISTORY, MENU & ADMIN — PROTECTED
 // ==========================================
 apiRouter.use('/admin', requireRole(['kitchen', 'cashier', 'manager', 'admin']));
+
+// Complete Order History — STRICTLY EXCLUSIVE TO GM (manager) & ADMIN (admin)
+apiRouter.get('/admin/orders', requireRole(['manager', 'admin']), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const history = db.getCompleteOrderHistory({
+      status: typeof req.query.status === 'string' ? req.query.status : undefined,
+      tableId: typeof req.query.tableId === 'string' ? req.query.tableId : undefined,
+      search: typeof req.query.search === 'string' ? req.query.search : undefined,
+      dateRange: typeof req.query.dateRange === 'string' ? req.query.dateRange : undefined
+    });
+    res.json(history);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to load complete order history' });
+  }
+});
+
+// Export Complete Order History CSV — STRICTLY EXCLUSIVE TO GM (manager) & ADMIN (admin)
+apiRouter.get('/admin/orders/export-csv', requireRole(['manager', 'admin']), (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { orders } = db.getCompleteOrderHistory();
+    let csv =
+      'Order Confirmation ID,Created At,Channel / Table,Customer Privacy,Round,Status,Items Ordered,Subtotal (Nu.),Linked Bill,Bill Status\n';
+
+    for (const o of orders) {
+      const itemsSummary = o.items
+        .map(it => `${it.quantity}x ${it.name}`)
+        .join('; ');
+      csv += `${csvSafeCell(o.orderNumber)},${csvSafeCell(o.createdAt)},${csvSafeCell(o.tableNumber)},${csvSafeCell(o.anonymousLabel || 'Anonymous Guest (Zero PII)')},${o.roundNumber},${csvSafeCell(o.status)},${csvSafeCell(itemsSummary)},${o.subtotal},${csvSafeCell(o.billNumber || '')},${csvSafeCell(o.billStatus || '')}\n`;
+    }
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="high_quality_cafe_order_history_${new Date().toISOString().slice(0, 10)}.csv"`
+    );
+    res.send(csv);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to export order history CSV' });
+  }
+});
+
+// Manage / Update Order Status from Complete Order History — STRICTLY EXCLUSIVE TO GM (manager) & ADMIN (admin)
+apiRouter.patch('/admin/orders/:orderId/status', requireRole(['manager', 'admin']), (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { status } = req.body || {};
+    const staffName = req.staff?.name || 'GM / Admin';
+
+    const updatedOrder = db.updateOrderStatus(req.params.orderId, status, staffName);
+    const session = db.getSession(updatedOrder.sessionId);
+    const bill = session?.billId ? db.getBill(session.billId) : null;
+    const sanitizedOrder = sanitizeOrderForGuest(updatedOrder);
+
+    sseHub.broadcastToTableAndStaff(
+      updatedOrder.tableId,
+      'order_status_updated',
+      {
+        order: sanitizedOrder,
+        bill,
+        status
+      },
+      {
+        order: sanitizedOrder,
+        status
+      },
+      updatedOrder.trackingToken
+    );
+
+    res.json({ success: true, order: sanitizedOrder, bill });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to update order status' });
+  }
+});
 
 apiRouter.post('/admin/menu', requireRole(['manager', 'admin']), (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -934,7 +1156,7 @@ apiRouter.post('/admin/staff', requireRole(['admin']), (req: AuthenticatedReques
   try {
     const staffName = req.staff?.name || 'Admin';
     const user = db.saveStaffUser(req.body, staffName);
-    res.status(201).json({ success: true, user });
+    res.status(201).json({ success: true, user: { ...user, pin: '••••' } });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -943,8 +1165,21 @@ apiRouter.post('/admin/staff', requireRole(['admin']), (req: AuthenticatedReques
 apiRouter.put('/admin/staff/:id', requireRole(['admin']), (req: AuthenticatedRequest, res: Response) => {
   try {
     const staffName = req.staff?.name || 'Admin';
+    const previous = db.getStaffUserById(req.params.id);
     const user = db.saveStaffUser({ ...req.body, id: req.params.id }, staffName);
-    res.json({ success: true, user });
+
+    const pinChanged = Boolean(previous && previous.pin !== user.pin);
+    const roleChanged = Boolean(previous && previous.role !== user.role);
+    if (!user.active || pinChanged || roleChanged) {
+      // Immediately revoke sessions & live SSE feeds if account deactivated, role modified, or PIN rotated
+      // (unless Admin is updating their own non-security display name only)
+      if (user.id !== req.staff?.id || !user.active || roleChanged) {
+        revokeTokensForUser(user.id);
+        sseHub.disconnectByUserId(user.id);
+      }
+    }
+
+    res.json({ success: true, user: { ...user, pin: '••••' } });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -955,6 +1190,8 @@ apiRouter.delete('/admin/staff/:id', requireRole(['admin']), (req: Authenticated
     const staffName = req.staff?.name || 'Admin';
     const ok = db.deleteStaffUser(req.params.id, staffName);
     if (!ok) return res.status(404).json({ error: 'Staff account not found' });
+    revokeTokensForUser(req.params.id);
+    sseHub.disconnectByUserId(req.params.id);
     res.json({ success: true, message: 'Staff account deleted' });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -1042,10 +1279,10 @@ apiRouter.get('/admin/reports/export-csv', requireRole(['manager', 'admin']), (_
 
     for (const b of bills) {
       const methods = b.payments.map(p => `${p.method}: ${p.amount}`).join('; ');
-      csv += `"${b.billNumber}","${b.tableNumber}","${b.status}","${b.createdAt}",${b.subtotal},${b.discount?.appliedAmount || 0},${b.serviceChargeAmount},${b.taxAmount},${b.total},${b.paidAmount},${b.balanceDue},"${methods}"\n`;
+      csv += `${csvSafeCell(b.billNumber)},${csvSafeCell(b.tableNumber)},${csvSafeCell(b.status)},${csvSafeCell(b.createdAt)},${b.subtotal},${b.discount?.appliedAmount || 0},${b.serviceChargeAmount},${b.taxAmount},${b.total},${b.paidAmount},${b.balanceDue},${csvSafeCell(methods)}\n`;
     }
 
-    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="high_quality_cafe_sales_${new Date().toISOString().slice(0, 10)}.csv"`);
     res.send(csv);
   } catch (err: any) {
@@ -1061,8 +1298,8 @@ apiRouter.get('/admin/audit-logs', requireRole(['manager', 'admin']), (_req: Aut
   });
 });
 
-// Update System Settings
-apiRouter.put('/admin/settings', requireRole(['admin']), (req: AuthenticatedRequest, res: Response) => {
+// Update System Settings (Admin Only)
+const updateSystemSettingsHandler = (req: AuthenticatedRequest, res: Response) => {
   try {
     const staffName = req.staff?.name || 'Admin';
     const updated = db.updateSettings(req.body, staffName);
@@ -1071,7 +1308,10 @@ apiRouter.put('/admin/settings', requireRole(['admin']), (req: AuthenticatedRequ
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
-});
+};
+
+apiRouter.put('/admin/settings', requireRole(['admin']), updateSystemSettingsHandler);
+apiRouter.patch('/admin/settings', requireRole(['admin']), updateSystemSettingsHandler);
 
 // Catch-all for unknown API routes (never fall through to SPA HTML)
 apiRouter.use((_req: Request, res: Response) => {

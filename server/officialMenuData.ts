@@ -1,4 +1,4 @@
-import { MenuCategory, MenuItem } from '../src/types/index.ts';
+import type { MenuCategory, MenuItem } from '../src/types/index.ts';
 
 export const officialCategories: MenuCategory[] = [
   {

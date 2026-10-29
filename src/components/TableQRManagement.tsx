@@ -4,7 +4,6 @@ import {
   Printer,
   ExternalLink,
   Download,
-  Sparkles,
   Coffee,
   Plus,
   RefreshCw,
@@ -15,12 +14,11 @@ import {
   AlertCircle,
   X,
   Lock,
-  Layers,
-  HelpCircle,
   Copy,
-  Check
+  Check,
+  Search
 } from 'lucide-react';
-import { RestaurantTable } from '../types/index.ts';
+import { RestaurantTable, StaffUser } from '../types/index.ts';
 import { api } from '../lib/api.ts';
 
 interface TableWithQR extends RestaurantTable {
@@ -29,14 +27,19 @@ interface TableWithQR extends RestaurantTable {
 }
 
 interface TableQRManagementProps {
+  currentUser?: StaffUser | null;
   onSelectTableForCustomerView: (tableId: string, token?: string) => void;
   onRefreshData?: () => void;
+  embedded?: boolean;
 }
 
 export const TableQRManagement: React.FC<TableQRManagementProps> = ({
+  currentUser,
   onSelectTableForCustomerView,
-  onRefreshData
+  onRefreshData,
+  embedded = false
 }) => {
+  const isAdmin = !currentUser || currentUser.role === 'admin';
   const [tablesWithQR, setTablesWithQR] = useState<TableWithQR[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -46,8 +49,10 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
 
-  // Regenerate token confirmation modal
+  // Regenerate token & delete confirmation modals
   const [tableToRegenerate, setTableToRegenerate] = useState<TableWithQR | null>(null);
+  const [tableToDelete, setTableToDelete] = useState<TableWithQR | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [isRegeneratingAll, setIsRegeneratingAll] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
 
@@ -94,7 +99,7 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      showNotification('success', `Downloaded QR image for ${table.tableNumber}`);
+      showNotification('success', `Downloaded QR image for ${table.tableNumber}.`);
     } catch (err: any) {
       showNotification('error', `Download failed: ${err.message}`);
     }
@@ -113,7 +118,7 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
         document.body.removeChild(link);
       }, index * 250);
     });
-    showNotification('success', `Downloading all ${tablesWithQR.length} QR code images...`);
+    showNotification('success', `Downloading all ${tablesWithQR.length} QR code PNG files...`);
   };
 
   // Regenerate single table QR token
@@ -124,7 +129,10 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
       const res = await api.regenerateTableToken(tableToRegenerate.id);
       await loadQRCodes();
       if (onRefreshData) onRefreshData();
-      showNotification('success', `New secure QR token minted for ${res.table.tableNumber}. Old printed QR codes are now invalidated.`);
+      showNotification(
+        'success',
+        `New secure QR token minted for ${res.table.tableNumber}. Reprint its table stand card before guest use.`
+      );
       setTableToRegenerate(null);
     } catch (err: any) {
       showNotification('error', err.message || 'Failed to regenerate token');
@@ -140,7 +148,7 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
       await api.regenerateAllTableTokens();
       await loadQRCodes();
       if (onRefreshData) onRefreshData();
-      showNotification('success', `Successfully regenerated unique secure QR tokens for all tables.`);
+      showNotification('success', 'Regenerated unique cryptographic QR tokens for all tables.');
       setIsRegeneratingAll(false);
     } catch (err: any) {
       showNotification('error', err.message || 'Failed to regenerate all tokens');
@@ -160,7 +168,7 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
       await api.saveAdminTable(editingTable);
       await loadQRCodes();
       if (onRefreshData) onRefreshData();
-      showNotification('success', `Table ${editingTable.tableNumber} saved successfully with unique QR code generated.`);
+      showNotification('success', `${editingTable.tableNumber} saved with a unique QR code.`);
       setEditingTable(null);
     } catch (err: any) {
       setModalError(err.message || 'Failed to save table');
@@ -169,20 +177,30 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
     }
   };
 
-  // Delete table
-  const handleDeleteTable = async (table: TableWithQR) => {
+  // Request table deletion confirmation
+  const requestDeleteTable = (table: TableWithQR) => {
     if (table.status === 'occupied') {
-      showNotification('error', `Cannot delete ${table.tableNumber} because it currently has an active dining session.`);
+      showNotification('error', `Cannot delete ${table.tableNumber} while it has an active dining session.`);
       return;
     }
+    setTableToDelete(table);
+  };
 
+  // Confirm delete table
+  const handleConfirmDeleteTable = async () => {
+    if (!tableToDelete || isDeleting) return;
     try {
-      await api.deleteAdminTable(table.id);
+      setIsDeleting(true);
+      await api.deleteAdminTable(tableToDelete.id);
+      const removedLabel = tableToDelete.tableNumber;
+      setTableToDelete(null);
       await loadQRCodes();
       if (onRefreshData) onRefreshData();
-      showNotification('success', `${table.tableNumber} removed successfully.`);
+      showNotification('success', `${removedLabel} removed.`);
     } catch (err: any) {
       showNotification('error', err.message || 'Failed to delete table');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -201,7 +219,6 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
     }, 150);
   };
 
-  // Filter sections
   const sections = Array.from(new Set(tablesWithQR.map(t => t.section))).filter(Boolean);
 
   const filteredTables = tablesWithQR.filter(table => {
@@ -216,8 +233,66 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
     return true;
   });
 
+  const globalActionButtons = (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        onClick={() => {
+          setSinglePrintTable(null);
+          window.print();
+        }}
+        className="min-h-[42px] px-3.5 py-2 bg-white hover:bg-stone-50 text-stone-800 border border-stone-200 rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
+      >
+        <Printer className="w-4 h-4 text-stone-500" />
+        <span>Print All Cards</span>
+      </button>
+
+      <button
+        type="button"
+        onClick={handleDownloadAllQRs}
+        className="min-h-[42px] px-3.5 py-2 bg-white hover:bg-stone-50 text-stone-800 border border-stone-200 rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
+      >
+        <Download className="w-4 h-4 text-stone-500" />
+        <span>Download All PNGs</span>
+      </button>
+
+      {isAdmin && (
+        <>
+          <button
+            type="button"
+            onClick={() => setIsRegeneratingAll(true)}
+            className="min-h-[42px] px-3.5 py-2 bg-white hover:bg-stone-50 text-stone-800 border border-stone-200 rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
+            title="Invalidate old printed QR codes and issue fresh tokens"
+          >
+            <RefreshCw className="w-4 h-4 text-stone-500" />
+            <span>Rotate All Tokens</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setModalError(null);
+              const nextNum = tablesWithQR.length + 1;
+              setEditingTable({
+                id: `T${String(nextNum).padStart(2, '0')}`,
+                tableNumber: `Table ${nextNum}`,
+                capacity: 4,
+                section: 'Main Hall',
+                status: 'available'
+              });
+            }}
+            className="min-h-[42px] px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-xl text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add New Table</span>
+          </button>
+        </>
+      )}
+    </div>
+  );
+
   return (
-    <div className="min-h-screen bg-stone-100 text-stone-900 pb-28">
+    <div className={embedded ? 'text-stone-900 space-y-6' : 'min-h-screen bg-stone-50 text-stone-900 pb-24'}>
       {/* Printable Sheet (Shown only during window.print) */}
       <div className="hidden print:block print:w-full print:bg-white print:text-stone-900">
         <div className="p-4 space-y-8">
@@ -234,10 +309,8 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
             {(singlePrintTable ? [singlePrintTable] : filteredTables).map(table => (
               <div
                 key={table.id}
-                className="border-2 border-stone-900 rounded-3xl p-6 flex flex-col items-center justify-between text-center bg-white shadow-none break-inside-avoid"
-                style={{ minHeight: '380px' }}
+                className="min-h-[380px] border-2 border-stone-900 rounded-3xl p-6 flex flex-col items-center justify-between text-center bg-white shadow-none break-inside-avoid"
               >
-                {/* Stand Header */}
                 <div className="w-full border-b-2 border-stone-900 pb-3 mb-4">
                   <div className="flex items-center justify-center gap-1.5 text-stone-900 mb-1">
                     <Coffee className="w-4 h-4" />
@@ -253,8 +326,7 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
                   </p>
                 </div>
 
-                {/* QR Code Graphic */}
-                <div className="p-4 bg-white border border-stone-300 rounded-2xl shadow-xs my-2">
+                <div className="p-4 bg-white border border-stone-300 rounded-2xl my-2">
                   <img
                     src={table.qrCodeDataUrl}
                     alt={`QR Code for ${table.tableNumber}`}
@@ -262,16 +334,15 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
                   />
                 </div>
 
-                {/* Instructions */}
                 <div className="w-full pt-4 border-t-2 border-dashed border-stone-300 space-y-1">
                   <p className="text-sm font-black text-stone-900">
                     Scan with Phone Camera to Order
                   </p>
                   <p className="text-[11px] text-stone-600">
-                    1. Point camera at QR &nbsp;•&nbsp; 2. Browse menu &nbsp;•&nbsp; 3. Order directly to kitchen
+                    1. Point camera at QR &nbsp;·&nbsp; 2. Browse menu &nbsp;·&nbsp; 3. Send order to kitchen
                   </p>
                   <p className="text-[9px] font-mono text-stone-400 pt-1">
-                    Token: {table.tableToken?.slice(0, 16) || 'SECURE'} • Table ID: {table.id}
+                    Token: {table.tableToken?.slice(0, 16) || 'SECURE'} · Table ID: {table.id}
                   </p>
                 </div>
               </div>
@@ -282,82 +353,39 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
 
       {/* Screen Interface (Hidden during print) */}
       <div className="no-print">
-        {/* Top Header Bar */}
-        <header className="bg-white border-b border-stone-200 px-4 sm:px-6 py-5 shadow-xs">
-          <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="p-1.5 bg-amber-500/10 text-amber-800 rounded-lg">
-                  <QrCode className="w-5 h-5 text-amber-600" />
-                </span>
-                <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-stone-900 font-display">
-                  Table QR Codes & Ordering Security
-                </h1>
+        {!embedded && (
+          <header className="bg-white border-b border-stone-200 px-4 sm:px-6 py-5">
+            <div className="max-w-7xl mx-auto flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2.5">
+                  <span className="w-9 h-9 bg-teal-50 border border-teal-200 text-teal-800 rounded-xl flex items-center justify-center shrink-0">
+                    <QrCode className="w-4 h-4" />
+                  </span>
+                  <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-stone-900 font-display">
+                    Table QR Stand Cards &amp; Tokens
+                  </h1>
+                </div>
+                <p className="text-xs sm:text-sm text-stone-500 max-w-2xl">
+                  Manage dining tables, print physical QR stand cards, or rotate cryptographic table tokens.
+                </p>
               </div>
-              <p className="text-xs text-stone-500">
-                Every café table has a cryptographically unique QR code. Customers scanning are automatically bound to their specific table.
-              </p>
+
+              {globalActionButtons}
             </div>
+          </header>
+        )}
 
-            {/* Global Actions */}
-            <div className="flex flex-wrap items-center gap-2.5">
-              <button
-                onClick={() => {
-                  setSinglePrintTable(null);
-                  window.print();
-                }}
-                className="px-3.5 py-2 bg-stone-900 hover:bg-stone-800 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
-              >
-                <Printer className="w-4 h-4" />
-                <span>Print All Stand Cards</span>
-              </button>
-
-              <button
-                onClick={handleDownloadAllQRs}
-                className="px-3.5 py-2 bg-white hover:bg-stone-50 text-stone-800 border border-stone-300 rounded-xl text-xs font-bold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
-              >
-                <Download className="w-4 h-4 text-stone-500" />
-                <span>Download All QR Codes</span>
-              </button>
-
-              <button
-                onClick={() => setIsRegeneratingAll(true)}
-                className="px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
-                title="Invalidate old printed QR codes and issue fresh tokens"
-              >
-                <RefreshCw className="w-4 h-4 text-amber-700" />
-                <span>Regenerate All Tokens</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setModalError(null);
-                  const nextNum = tablesWithQR.length + 1;
-                  setEditingTable({
-                    id: `T${String(nextNum).padStart(2, '0')}`,
-                    tableNumber: `Table ${nextNum}`,
-                    capacity: 4,
-                    section: 'Main Hall',
-                    status: 'available'
-                  });
-                }}
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Add New Table</span>
-              </button>
-            </div>
-          </div>
-        </header>
-
-        {/* Action Notification Toast */}
+        {/* Action Notification Banner */}
         {actionMessage && (
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-4">
-            <div className={`p-3.5 rounded-xl text-xs font-medium flex items-center justify-between border shadow-sm ${
-              actionMessage.type === 'success'
-                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                : 'bg-rose-50 text-rose-800 border-rose-200'
-            }`}>
+          <div className={embedded ? '' : 'max-w-7xl mx-auto px-4 sm:px-6 pt-5'}>
+            <div
+              role="status"
+              className={`p-3.5 rounded-xl text-xs font-medium flex items-center justify-between border ${
+                actionMessage.type === 'success'
+                  ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                  : 'bg-rose-50 text-rose-900 border-rose-200'
+              }`}
+            >
               <div className="flex items-center gap-2">
                 {actionMessage.type === 'success' ? (
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
@@ -367,48 +395,68 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
                 <span>{actionMessage.text}</span>
               </div>
               <button
+                type="button"
+                aria-label="Dismiss notification"
                 onClick={() => setActionMessage(null)}
-                className="text-stone-400 hover:text-stone-700 p-1"
+                className="text-stone-500 hover:text-stone-800 p-1 cursor-pointer"
               >
-                <X className="w-3.5 h-3.5" />
+                <X className="w-4 h-4" />
               </button>
             </div>
           </div>
         )}
 
         {/* Content Body */}
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-          {/* Security & Token Banner */}
-          <div className="bg-amber-950/10 border border-amber-900/20 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 flex items-center justify-center shrink-0">
-                <ShieldCheck className="w-5 h-5 text-amber-700" />
-              </div>
-              <div className="space-y-0.5">
-                <h3 className="text-xs font-bold text-amber-900 uppercase tracking-wide">
-                  Server-Enforced Table Identity & Token Verification
-                </h3>
-                <p className="text-xs text-amber-800/80 leading-relaxed max-w-3xl">
-                  Each QR code contains a unique, validated table identifier and cryptographic token. Customers cannot switch or spoof tables by editing URL numbers, cannot view other tables' orders, and cannot access management features.
+        <main className={embedded ? 'space-y-5' : 'max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6'}>
+          {/* Embedded Header Bar (when inside AdminHub) */}
+          {embedded && (
+            <div className="bg-white rounded-2xl border border-stone-200 p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <h2 className="text-lg font-bold text-stone-900 font-display">
+                  Dining Tables &amp; Cryptographic QR Cards
+                </h2>
+                <p className="text-xs text-stone-500 max-w-2xl">
+                  Each table is bound to a unique server-verified QR token so guests cannot spoof table numbers or view other tables&apos; orders.
                 </p>
               </div>
+              {globalActionButtons}
             </div>
+          )}
 
-            <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 text-xs font-semibold text-amber-900 bg-white/80 px-3 py-1.5 rounded-xl border border-amber-200">
-              <Lock className="w-3.5 h-3.5 text-amber-700" />
-              <span>{tablesWithQR.length} Configured Tables</span>
+          {/* Security Summary Strip */}
+          {!embedded && (
+            <div className="bg-white border border-stone-200 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-xl bg-teal-50 border border-teal-200 text-teal-800 flex items-center justify-center shrink-0">
+                  <ShieldCheck className="w-4 h-4" />
+                </div>
+                <div className="space-y-0.5">
+                  <h2 className="text-xs font-bold text-stone-900">
+                    Server-Enforced Table Identity Verification
+                  </h2>
+                  <p className="text-xs text-stone-500 leading-relaxed max-w-3xl">
+                    Every QR code embeds a verified table token. Guests cannot switch tables by changing URL parameters or access other tables&apos; active sessions.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 text-xs font-semibold text-stone-700 bg-stone-50 px-3.5 py-2 rounded-xl border border-stone-200 font-mono tabular-nums">
+                <Lock className="w-3.5 h-3.5 text-teal-700" />
+                <span>{tablesWithQR.length} Configured Tables</span>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Search & Section Filter Bar */}
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-3.5 rounded-2xl border border-stone-200/80 shadow-xs">
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
+          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-stone-200">
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 scrollbar-none">
               <button
+                type="button"
                 onClick={() => setSectionFilter('all')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-colors cursor-pointer ${
+                className={`min-h-[38px] px-3.5 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-colors cursor-pointer ${
                   sectionFilter === 'all'
-                    ? 'bg-stone-900 text-white'
-                    : 'text-stone-600 hover:text-stone-900 hover:bg-stone-100'
+                    ? 'bg-teal-50 text-teal-900 border border-teal-200 font-bold'
+                    : 'text-stone-600 hover:text-stone-900 hover:bg-stone-50 border border-transparent'
                 }`}
               >
                 All Sections ({tablesWithQR.length})
@@ -418,11 +466,12 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
                 return (
                   <button
                     key={sec}
+                    type="button"
                     onClick={() => setSectionFilter(sec)}
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-colors cursor-pointer ${
+                    className={`min-h-[38px] px-3.5 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap transition-colors cursor-pointer ${
                       sectionFilter === sec
-                        ? 'bg-stone-900 text-white'
-                        : 'text-stone-600 hover:text-stone-900 hover:bg-stone-100'
+                        ? 'bg-teal-50 text-teal-900 border border-teal-200 font-bold'
+                        : 'text-stone-600 hover:text-stone-900 hover:bg-stone-50 border border-transparent'
                     }`}
                   >
                     {sec} ({count})
@@ -432,19 +481,25 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
             </div>
 
             <div className="relative">
+              <label htmlFor="qr-table-search" className="sr-only">
+                Search tables by number, section, or ID
+              </label>
+              <Search className="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
+                id="qr-table-search"
                 type="text"
-                placeholder="Search tables (e.g. Table 1, Terrace)..."
+                placeholder="Search table or section..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full sm:w-64 pl-3 pr-8 py-1.5 text-xs bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                className="w-full md:w-64 h-11 pl-10 pr-14 text-xs sm:text-sm bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
               />
               {searchQuery && (
                 <button
+                  type="button"
                   onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700 text-xs"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-medium text-stone-500 hover:text-stone-800 px-1.5 py-1 cursor-pointer"
                 >
-                  <X className="w-3.5 h-3.5" />
+                  Clear
                 </button>
               )}
             </div>
@@ -452,160 +507,167 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
 
           {/* Table Cards Grid */}
           {isLoading ? (
-            <div className="p-16 text-center text-xs text-stone-400 bg-white rounded-2xl border border-stone-200">
-              <RefreshCw className="w-6 h-6 animate-spin mx-auto text-amber-600 mb-2" />
-              Generating high-resolution validated QR codes...
+            <div className="p-16 text-center text-xs text-stone-500 bg-white rounded-2xl border border-stone-200">
+              <RefreshCw className="w-5 h-5 animate-spin mx-auto text-teal-700 mb-2.5" />
+              Loading validated QR stand cards...
             </div>
           ) : filteredTables.length === 0 ? (
-            <div className="p-12 text-center text-xs text-stone-500 bg-white rounded-2xl border border-stone-200">
-              No tables matching your filter.
+            <div className="p-12 text-center text-xs sm:text-sm text-stone-500 bg-white rounded-2xl border border-stone-200">
+              No tables match the current filter.
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredTables.map(table => (
-                <article
-                  key={table.id}
-                  className="bg-white rounded-2xl border border-stone-200/90 shadow-xs hover:shadow-md transition-all overflow-hidden flex flex-col justify-between"
-                >
-                  {/* Top Card Header */}
-                  <div>
-                    <div className="p-4 bg-stone-900 text-white flex items-center justify-between">
-                      <div className="space-y-0.5">
-                        <div className="flex items-center gap-1.5 text-amber-400 text-[10px] font-bold uppercase tracking-wider">
-                          <Coffee className="w-3.5 h-3.5" />
-                          <span>High Quality Cafe</span>
+              {filteredTables.map(table => {
+                const isOccupied = table.status === 'occupied';
+                return (
+                  <article
+                    key={table.id}
+                    className="bg-white rounded-2xl border border-stone-200 overflow-hidden flex flex-col justify-between"
+                  >
+                    {/* Card Header */}
+                    <div>
+                      <div className="p-5 bg-stone-50/80 border-b border-stone-200 flex items-start justify-between gap-3">
+                        <div className="space-y-0.5">
+                          <h3 className="text-lg font-bold font-display text-stone-900">
+                            {table.tableNumber}
+                          </h3>
+                          <p className="text-xs text-stone-500">
+                            {table.section} · {table.capacity > 0 ? `Seats ${table.capacity}` : 'Counter Pickup'}
+                          </p>
                         </div>
-                        <h2 className="text-xl font-bold font-display text-white">
-                          {table.tableNumber}
-                        </h2>
-                        <p className="text-[11px] text-stone-400">
-                          {table.section} {table.capacity > 0 ? `· Seats ${table.capacity}` : '· Takeaway'}
-                        </p>
+
+                        <div className="text-right space-y-1 shrink-0">
+                          <span
+                            className={`inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-0.5 rounded-md border ${
+                              isOccupied
+                                ? 'bg-amber-50 text-amber-900 border-amber-200'
+                                : 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                            }`}
+                          >
+                            <span
+                              aria-hidden="true"
+                              className={`w-1.5 h-1.5 rounded-full ${
+                                isOccupied ? 'bg-amber-600' : 'bg-emerald-600'
+                              }`}
+                            />
+                            {isOccupied ? 'Occupied' : 'Available'}
+                          </span>
+                          <span className="text-[11px] font-mono tabular-nums text-stone-400 block">
+                            ID: {table.id}
+                          </span>
+                        </div>
                       </div>
 
-                      <div className="text-right space-y-1">
-                        <span className={`text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full uppercase block text-center ${
-                          table.status === 'occupied'
-                            ? 'bg-amber-500 text-stone-950 font-bold animate-pulse'
-                            : 'bg-emerald-600 text-white font-semibold'
-                        }`}>
-                          {table.status}
-                        </span>
-                        <span className="text-[10px] font-mono text-stone-400 block">
-                          ID: {table.id}
-                        </span>
+                      {/* QR Code Canvas */}
+                      <div className="p-6 flex flex-col items-center justify-center border-b border-stone-100 space-y-4">
+                        <div className="p-3 bg-white rounded-2xl border border-stone-200">
+                          <img
+                            src={table.qrCodeDataUrl}
+                            alt={`QR Code for ${table.tableNumber}`}
+                            className="w-44 h-44 object-contain"
+                          />
+                        </div>
+
+                        <div className="w-full space-y-1.5 text-center">
+                          <div className="flex items-center justify-between gap-2 text-xs font-mono text-stone-600 bg-stone-50 border border-stone-200 px-3 py-2 rounded-xl">
+                            <span className="truncate">{table.qrUrl}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleCopyUrl(table)}
+                              className="inline-flex items-center gap-1 text-stone-600 hover:text-stone-900 font-sans font-semibold shrink-0 cursor-pointer"
+                            >
+                              {copiedTableId === table.id ? (
+                                <>
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span className="text-emerald-700">Copied</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3.5 h-3.5" />
+                                  <span>Copy</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-center gap-1.5 text-[11px] text-stone-500 font-mono">
+                            <ShieldCheck className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                            <span>Token: {table.tableToken ? `${table.tableToken.slice(0, 14)}...` : 'Active'}</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
 
-                    {/* QR Code Presentation Canvas */}
-                    <div className="p-6 flex flex-col items-center justify-center bg-stone-50/60 border-b border-stone-100 space-y-3">
-                      <div className="p-3 bg-white rounded-2xl border border-stone-200 shadow-sm relative group">
-                        <img
-                          src={table.qrCodeDataUrl}
-                          alt={`QR Code for ${table.tableNumber}`}
-                          className="w-44 h-44 object-contain"
-                        />
-                        <div className="absolute inset-0 bg-stone-950/70 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                          <button
-                            onClick={() => handleDownloadSingleQR(table)}
-                            className="p-2 bg-white text-stone-900 rounded-lg text-xs font-semibold hover:bg-stone-100 flex items-center gap-1 cursor-pointer shadow-md"
-                            title="Download PNG"
-                          >
-                            <Download className="w-4 h-4" />
-                            <span>PNG</span>
-                          </button>
-                          <button
-                            onClick={() => handlePrintSingle(table)}
-                            className="p-2 bg-amber-500 text-stone-950 rounded-lg text-xs font-semibold hover:bg-amber-400 flex items-center gap-1 cursor-pointer shadow-md"
-                            title="Print Card"
-                          >
-                            <Printer className="w-4 h-4" />
-                            <span>Print</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="text-center space-y-1 max-w-xs">
-                        <p className="text-xs font-bold text-stone-800">
-                          Scan to Order for {table.tableNumber}
-                        </p>
-                        <div className="flex items-center justify-center gap-1.5 text-[11px] font-mono text-stone-500 bg-stone-100 px-2.5 py-1 rounded-lg break-all">
-                          <span className="truncate">{table.qrUrl}</span>
-                          <button
-                            onClick={() => handleCopyUrl(table)}
-                            className="p-1 text-stone-400 hover:text-stone-700 shrink-0 cursor-pointer"
-                            title="Copy link"
-                          >
-                            {copiedTableId === table.id ? (
-                              <Check className="w-3 h-3 text-emerald-600" />
-                            ) : (
-                              <Copy className="w-3 h-3" />
-                            )}
-                          </button>
-                        </div>
-                        <div className="flex items-center justify-center gap-1 text-[10px] text-stone-400 pt-0.5">
-                          <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                          <span>Token: {table.tableToken ? `${table.tableToken.slice(0, 14)}...` : 'Active'}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Card Bottom Controls */}
-                  <div className="p-3.5 bg-white space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <button
-                        onClick={() => onSelectTableForCustomerView(table.id, table.tableToken)}
-                        className="flex-1 py-1.5 px-3 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200/80 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                        title="Simulate customer scanning this table's QR code"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5 text-amber-700" />
-                        <span>Test Customer View</span>
-                      </button>
-
-                      <button
-                        onClick={() => handlePrintSingle(table)}
-                        className="py-1.5 px-3 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
-                        title="Print single stand tent card"
-                      >
-                        <Printer className="w-3.5 h-3.5" />
-                        <span>Print</span>
-                      </button>
-                    </div>
-
-                    <div className="pt-2 border-t border-stone-100 flex items-center justify-between text-xs">
-                      <button
-                        onClick={() => setTableToRegenerate(table)}
-                        className="text-stone-500 hover:text-amber-800 flex items-center gap-1 font-medium cursor-pointer"
-                        title="Regenerate security token"
-                      >
-                        <RefreshCw className="w-3 h-3 text-stone-400" />
-                        <span>Regenerate Token</span>
-                      </button>
-
-                      <div className="flex items-center gap-1">
+                    {/* Touch-Friendly Footer Actions (No Hover-Only Overlays) */}
+                    <div className="p-4 bg-white space-y-2.5">
+                      <div className="grid grid-cols-3 gap-2">
                         <button
-                          onClick={() => {
-                            setModalError(null);
-                            setEditingTable({ ...table });
-                          }}
-                          className="p-1.5 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded-lg cursor-pointer"
-                          title="Edit table details"
+                          type="button"
+                          onClick={() => onSelectTableForCustomerView(table.id, table.tableToken)}
+                          className="col-span-3 sm:col-span-1 min-h-[40px] px-2.5 py-2 bg-teal-50 hover:bg-teal-100/80 text-teal-900 border border-teal-200 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                         >
-                          <Edit2 className="w-3.5 h-3.5" />
+                          <ExternalLink className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                          <span>Guest View</span>
                         </button>
+
                         <button
-                          onClick={() => handleDeleteTable(table)}
-                          className="p-1.5 text-stone-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
-                          title="Delete table"
+                          type="button"
+                          onClick={() => handleDownloadSingleQR(table)}
+                          className="min-h-[40px] px-2.5 py-2 bg-white hover:bg-stone-50 text-stone-700 border border-stone-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
+                          <Download className="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                          <span>PNG</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handlePrintSingle(table)}
+                          className="min-h-[40px] px-2.5 py-2 bg-white hover:bg-stone-50 text-stone-700 border border-stone-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Printer className="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                          <span>Print</span>
                         </button>
                       </div>
+
+                      <div className="pt-2 border-t border-stone-100 flex items-center justify-between gap-2 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setTableToRegenerate(table)}
+                          className="min-h-[36px] px-2 text-stone-600 hover:text-stone-900 flex items-center gap-1.5 font-medium cursor-pointer"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5 text-stone-400" />
+                          <span>Rotate Token</span>
+                        </button>
+
+                        {isAdmin && (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setModalError(null);
+                                setEditingTable({ ...table });
+                              }}
+                              aria-label={`Edit ${table.tableNumber}`}
+                              className="min-h-[36px] px-2.5 text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded-lg inline-flex items-center gap-1 font-medium cursor-pointer"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                              <span>Edit</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => requestDeleteTable(table)}
+                              aria-label={`Delete ${table.tableNumber}`}
+                              className="min-h-[36px] px-2.5 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg inline-flex items-center gap-1 font-medium cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Delete</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </article>
-              ))}
+                  </article>
+                );
+              })}
             </div>
           )}
         </main>
@@ -613,83 +675,94 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
 
       {/* MODAL 1: Add or Edit Table */}
       {editingTable && (
-        <div className="fixed inset-0 z-50 bg-stone-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-stone-200 space-y-4">
+        <div className="fixed inset-0 z-50 bg-stone-950/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="qr-edit-table-title"
+            className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-stone-200 space-y-4"
+          >
             <div className="flex items-center justify-between border-b border-stone-100 pb-3">
-              <h3 className="text-base font-bold text-stone-900 font-display">
+              <h3 id="qr-edit-table-title" className="text-base font-bold text-stone-900 font-display">
                 {tablesWithQR.some(t => t.id === editingTable.id) ? 'Edit Café Table' : 'Add New Café Table'}
               </h3>
               <button
+                type="button"
+                aria-label="Close table dialog"
                 onClick={() => setEditingTable(null)}
-                className="text-stone-400 hover:text-stone-700 p-1"
+                className="w-9 h-9 rounded-lg hover:bg-stone-100 flex items-center justify-center text-stone-500 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             {modalError && (
-              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <div role="alert" className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
                 <span>{modalError}</span>
               </div>
             )}
 
             <form onSubmit={handleSaveTable} className="space-y-4 text-xs">
-              <div>
-                <label className="font-bold text-stone-700 block mb-1">
+              <div className="space-y-1">
+                <label htmlFor="qr-table-id-input" className="font-semibold text-stone-700 block">
                   Table Identifier (ID)
                 </label>
                 <input
+                  id="qr-table-id-input"
                   type="text"
                   required
                   value={editingTable.id || ''}
                   onChange={(e) => setEditingTable({ ...editingTable, id: e.target.value.toUpperCase() })}
-                  placeholder="e.g. T09, T10, BALCONY_1"
-                  className="w-full px-3 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500/20 font-mono"
+                  placeholder="e.g. T09, BALCONY_1"
+                  className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700 font-mono"
                 />
-                <span className="text-[10px] text-stone-400 mt-0.5 block">
-                  Short unique code used in the system
+                <span className="text-[11px] text-stone-500 block">
+                  Short unique code used in URLs and kitchen tickets.
                 </span>
               </div>
 
-              <div>
-                <label className="font-bold text-stone-700 block mb-1">
-                  Table Display Name
+              <div className="space-y-1">
+                <label htmlFor="qr-table-name-input" className="font-semibold text-stone-700 block">
+                  Display Name
                 </label>
                 <input
+                  id="qr-table-name-input"
                   type="text"
                   required
                   value={editingTable.tableNumber || ''}
                   onChange={(e) => setEditingTable({ ...editingTable, tableNumber: e.target.value })}
                   placeholder="e.g. Table 9, Window Table 3"
-                  className="w-full px-3 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                  className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">
+                <div className="space-y-1">
+                  <label htmlFor="qr-table-cap-input" className="font-semibold text-stone-700 block">
                     Seating Capacity
                   </label>
                   <input
+                    id="qr-table-cap-input"
                     type="number"
                     min="0"
                     max="50"
                     required
                     value={editingTable.capacity !== undefined ? editingTable.capacity : 4}
                     onChange={(e) => setEditingTable({ ...editingTable, capacity: Number(e.target.value) })}
-                    className="w-full px-3 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700 font-mono tabular-nums"
                   />
                 </div>
 
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">
+                <div className="space-y-1">
+                  <label htmlFor="qr-table-sec-select" className="font-semibold text-stone-700 block">
                     Café Section
                   </label>
                   <select
+                    id="qr-table-sec-select"
                     value={editingTable.section || 'Main Hall'}
                     onChange={(e) => setEditingTable({ ...editingTable, section: e.target.value })}
-                    className="w-full px-3 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                    className="w-full min-h-[44px] px-3 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                   >
                     <option value="Main Hall">Main Hall</option>
                     <option value="Window Terrace">Window Terrace</option>
@@ -700,20 +773,20 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-stone-100 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-stone-100 flex items-center justify-end gap-2.5">
                 <button
                   type="button"
                   onClick={() => setEditingTable(null)}
-                  className="px-4 py-2 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl font-semibold transition-colors cursor-pointer"
+                  className="min-h-[44px] px-4 py-2 text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded-xl font-semibold transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSaving}
-                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold transition-colors cursor-pointer"
+                  className="min-h-[44px] px-5 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-xl font-bold transition-colors disabled:opacity-50 cursor-pointer"
                 >
-                  {isSaving ? 'Saving...' : 'Save & Generate QR Code'}
+                  {isSaving ? 'Saving...' : 'Save & Generate QR'}
                 </button>
               </div>
             </form>
@@ -723,31 +796,31 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
 
       {/* MODAL 2: Regenerate Single Table Token Confirmation */}
       {tableToRegenerate && (
-        <div className="fixed inset-0 z-50 bg-stone-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-stone-200 space-y-4">
-            <div className="flex items-center gap-3 text-amber-700">
-              <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center shrink-0">
-                <RefreshCw className="w-5 h-5 text-amber-700" />
+        <div className="fixed inset-0 z-50 bg-stone-950/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-stone-200 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
+                <RefreshCw className="w-5 h-5 text-amber-800" />
               </div>
               <div>
                 <h3 className="text-base font-bold text-stone-900 font-display">
-                  Regenerate QR Token?
+                  Rotate QR Token for {tableToRegenerate.tableNumber}?
                 </h3>
-                <p className="text-xs text-stone-500">
-                  {tableToRegenerate.tableNumber} ({tableToRegenerate.id})
+                <p className="text-xs text-stone-500 font-mono">
+                  ID: {tableToRegenerate.id}
                 </p>
               </div>
             </div>
 
             <p className="text-xs text-stone-600 leading-relaxed">
-              Generating a new cryptographic security token will update the QR code for <strong>{tableToRegenerate.tableNumber}</strong>. Any previously printed stand cards or saved bookmarks for this table will no longer be accepted for customer ordering until reprinted.
+              Generating a fresh cryptographic token updates the QR code for <strong>{tableToRegenerate.tableNumber}</strong>. Previously printed stand cards for this table will stop working until reprinted.
             </p>
 
-            <div className="pt-2 flex items-center justify-end gap-2">
+            <div className="pt-2 border-t border-stone-100 flex items-center justify-end gap-2.5">
               <button
                 type="button"
                 onClick={() => setTableToRegenerate(null)}
-                className="px-4 py-2 bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs rounded-xl font-semibold transition-colors cursor-pointer"
+                className="min-h-[42px] px-4 py-2 text-stone-600 hover:text-stone-900 hover:bg-stone-100 text-xs rounded-xl font-semibold transition-colors cursor-pointer"
               >
                 Cancel
               </button>
@@ -755,9 +828,9 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
                 type="button"
                 onClick={handleConfirmRegenerateToken}
                 disabled={isRegenerating}
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs rounded-xl font-bold transition-colors cursor-pointer"
+                className="min-h-[42px] px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white text-xs rounded-xl font-bold transition-colors disabled:opacity-50 cursor-pointer"
               >
-                {isRegenerating ? 'Minting Token...' : 'Yes, Generate New Token'}
+                {isRegenerating ? 'Generating...' : 'Generate New Token'}
               </button>
             </div>
           </div>
@@ -766,31 +839,31 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
 
       {/* MODAL 3: Regenerate All Tokens Confirmation */}
       {isRegeneratingAll && (
-        <div className="fixed inset-0 z-50 bg-stone-950/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-stone-200 space-y-4">
-            <div className="flex items-center gap-3 text-amber-700">
-              <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center shrink-0">
-                <ShieldCheck className="w-5 h-5 text-amber-700" />
+        <div className="fixed inset-0 z-50 bg-stone-950/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-stone-200 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
+                <ShieldCheck className="w-5 h-5 text-amber-800" />
               </div>
               <div>
                 <h3 className="text-base font-bold text-stone-900 font-display">
-                  Regenerate All Table Tokens?
+                  Rotate All Table QR Tokens?
                 </h3>
                 <p className="text-xs text-stone-500">
-                  System-Wide QR Security Rotation
+                  System-wide security token refresh
                 </p>
               </div>
             </div>
 
             <p className="text-xs text-stone-600 leading-relaxed">
-              This will simultaneously regenerate new cryptographic tokens for all {tablesWithQR.length} tables. You will need to reprint all table tent cards for guests.
+              This issues new cryptographic tokens for all {tablesWithQR.length} tables at once. You will need to reprint all table stand cards for guests.
             </p>
 
-            <div className="pt-2 flex items-center justify-end gap-2">
+            <div className="pt-2 border-t border-stone-100 flex items-center justify-end gap-2.5">
               <button
                 type="button"
                 onClick={() => setIsRegeneratingAll(false)}
-                className="px-4 py-2 bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs rounded-xl font-semibold transition-colors cursor-pointer"
+                className="min-h-[42px] px-4 py-2 text-stone-600 hover:text-stone-900 hover:bg-stone-100 text-xs rounded-xl font-semibold transition-colors cursor-pointer"
               >
                 Cancel
               </button>
@@ -798,9 +871,43 @@ export const TableQRManagement: React.FC<TableQRManagementProps> = ({
                 type="button"
                 onClick={handleConfirmRegenerateAllTokens}
                 disabled={isRegenerating}
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs rounded-xl font-bold transition-colors cursor-pointer"
+                className="min-h-[42px] px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white text-xs rounded-xl font-bold transition-colors disabled:opacity-50 cursor-pointer"
               >
                 {isRegenerating ? 'Rotating All...' : 'Rotate All Tokens'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 4: Delete Table Confirmation */}
+      {tableToDelete && (
+        <div className="fixed inset-0 z-50 bg-stone-950/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-xl border border-stone-200 space-y-4">
+            <div className="space-y-1.5">
+              <h3 className="text-base font-bold text-stone-900 font-display">
+                Delete {tableToDelete.tableNumber}?
+              </h3>
+              <p className="text-xs text-stone-600 leading-relaxed">
+                Permanently remove <strong>{tableToDelete.tableNumber} ({tableToDelete.id})</strong>? Any printed QR stand card for this table will stop working.
+              </p>
+            </div>
+
+            <div className="pt-2 border-t border-stone-100 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setTableToDelete(null)}
+                className="min-h-[42px] px-4 py-2 text-stone-600 hover:text-stone-900 hover:bg-stone-100 text-xs rounded-xl font-semibold transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteTable}
+                disabled={isDeleting}
+                className="min-h-[42px] px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs rounded-xl font-bold transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                {isDeleting ? 'Deleting...' : 'Delete Table'}
               </button>
             </div>
           </div>

@@ -1,12 +1,16 @@
 import fs from 'fs';
 import path from 'path';
-import {
+import crypto from 'crypto';
+import type {
   StaffUser,
   RestaurantTable,
   MenuCategory,
   MenuItem,
   DiningSession,
   OrderRound,
+  OrderMode,
+  OrderHistoryRecord,
+  OrderHistorySummary,
   Bill,
   PaymentRecord,
   BillDiscount,
@@ -62,10 +66,10 @@ function getInitialSeedData(): DatabaseSchema {
   ];
 
   const staffUsers: StaffUser[] = [
-    { id: 'usr_admin', username: 'admin', name: 'Dechen Wangchuk (General Manager)', role: 'admin', active: true, pin: '1234' },
-    { id: 'usr_cashier', username: 'cashier', name: 'Sonam Choden (Head Cashier)', role: 'cashier', active: true, pin: '2345' },
+    { id: 'usr_admin', username: 'admin', name: 'Dechen Wangchuk (System Administrator)', role: 'admin', active: true, pin: '1234' },
+    { id: 'usr_cashier', username: 'cashier', name: 'Sonam Choden (Counter Staff)', role: 'cashier', active: true, pin: '2345' },
     { id: 'usr_chef', username: 'chef', name: 'Chef Tashi Dorji (Executive Chef)', role: 'kitchen', active: true, pin: '3456' },
-    { id: 'usr_manager', username: 'manager', name: 'Karma Tshering (Floor Manager)', role: 'manager', active: true, pin: '4567' },
+    { id: 'usr_manager', username: 'gm', name: 'Karma Tshering (GM · General Manager)', role: 'manager', active: true, pin: '4567' },
   ];
 
   const settings: SystemSettings = {
@@ -109,9 +113,49 @@ function getInitialSeedData(): DatabaseSchema {
 
 class CafeDatabase {
   private data: DatabaseSchema;
+  private orderSeq = 0;
+  private billSeq = 0;
 
   constructor() {
     this.data = this.load();
+  }
+
+  private generateUniqueOrderNumber(prefix: string): string {
+    const existingNumbers = new Set(this.data.orderRounds.map(o => o.orderNumber));
+    for (let attempt = 0; attempt < 20; attempt++) {
+      this.orderSeq = (this.orderSeq + 1) % 1000;
+      const timePart = Date.now().toString().slice(-4);
+      const seqPart = String(this.orderSeq).padStart(2, '0').slice(-2);
+      const randPart = crypto.randomInt(10, 99);
+      const candidate = `#HQC-${prefix}-${timePart}${seqPart}${randPart}`;
+      if (!existingNumbers.has(candidate)) {
+        return candidate;
+      }
+    }
+    return `#HQC-${prefix}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+  }
+
+  private generateUniqueBillNumber(): string {
+    const existingBills = new Set(this.data.bills.map(b => b.billNumber));
+    for (let attempt = 0; attempt < 20; attempt++) {
+      this.billSeq = (this.billSeq + 1) % 1000;
+      const timePart = Date.now().toString().slice(-5);
+      const seqPart = String(this.billSeq).padStart(3, '0');
+      const candidate = `INV-${timePart}${seqPart}`;
+      if (!existingBills.has(candidate)) {
+        return candidate;
+      }
+    }
+    return `INV-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+  }
+
+  private pruneExpiredIdempotencyKeys() {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    for (const [key, entry] of Object.entries(this.data.idempotencyKeys || {})) {
+      if (!entry || entry.timestamp < cutoff) {
+        delete this.data.idempotencyKeys[key];
+      }
+    }
   }
 
   private load(): DatabaseSchema {
@@ -125,15 +169,39 @@ class CafeDatabase {
           if (parsed.settings.showPricesOnCustomerMenu === undefined) {
             parsed.settings.showPricesOnCustomerMenu = false;
           }
-          // Ensure every table has a unique cryptographic tableToken
-          let hasUpdatedTokens = false;
+          // Ensure every table has a unique cryptographic tableToken and role labels distinguish GM vs Admin
+          let hasSchemaUpdates = false;
           parsed.tables.forEach((t: RestaurantTable, idx: number) => {
             if (!t.tableToken) {
               t.tableToken = `tok_${t.id.toLowerCase()}_${(idx + 1) * 739}_${Math.random().toString(36).slice(2, 8)}`;
-              hasUpdatedTokens = true;
+              hasSchemaUpdates = true;
             }
           });
-          if (hasUpdatedTokens) {
+          if (Array.isArray(parsed.staffUsers)) {
+            parsed.staffUsers.forEach((u: StaffUser) => {
+              if (u.id === 'usr_admin' && u.name.includes('(General Manager)')) {
+                u.name = 'Dechen Wangchuk (System Administrator)';
+                hasSchemaUpdates = true;
+              }
+              if (u.id === 'usr_manager' && u.name.includes('(Floor Manager)')) {
+                u.name = 'Karma Tshering (GM · General Manager)';
+                hasSchemaUpdates = true;
+              }
+            });
+          }
+          if (Array.isArray(parsed.orderRounds)) {
+            parsed.orderRounds.forEach((o: OrderRound) => {
+              if (!o.trackingToken) {
+                o.trackingToken = `trk_${crypto.randomBytes(24).toString('hex')}`;
+                hasSchemaUpdates = true;
+              }
+              if (!o.anonymousLabel) {
+                o.anonymousLabel = 'Anonymous Guest';
+                hasSchemaUpdates = true;
+              }
+            });
+          }
+          if (hasSchemaUpdates) {
             this.persist(parsed);
           }
           return parsed;
@@ -164,8 +232,67 @@ class CafeDatabase {
   }
 
   updateSettings(updates: Partial<SystemSettings>, staffName: string): SystemSettings {
-    this.data.settings = { ...this.data.settings, ...updates };
-    this.addAuditLog('UPDATE_SETTINGS', 'system', `System settings updated: ${Object.keys(updates).join(', ')}`, staffName);
+    if (!updates || typeof updates !== 'object') {
+      throw new Error('Invalid settings payload');
+    }
+
+    const sanitized: Partial<SystemSettings> = {};
+    if (updates.restaurantName !== undefined) {
+      const name = String(updates.restaurantName).trim();
+      if (name.length < 2 || name.length > 100) {
+        throw new Error('Restaurant name must be between 2 and 100 characters');
+      }
+      sanitized.restaurantName = name;
+    }
+    if (updates.tagline !== undefined) {
+      sanitized.tagline = String(updates.tagline).trim().slice(0, 140);
+    }
+    if (updates.operatingHours !== undefined) {
+      sanitized.operatingHours = String(updates.operatingHours).trim().slice(0, 100);
+    }
+    if (updates.currency !== undefined) {
+      sanitized.currency = String(updates.currency).trim().slice(0, 10) || 'Nu.';
+    }
+    if (updates.currencySymbol !== undefined) {
+      sanitized.currencySymbol = String(updates.currencySymbol).trim().slice(0, 10) || 'Nu.';
+    }
+    if (updates.taxRate !== undefined) {
+      const rate = Number(updates.taxRate);
+      if (!Number.isFinite(rate) || rate < 0 || rate > 1) {
+        throw new Error('Sales tax rate must be a decimal between 0 and 1 (e.g. 0.05 for 5%)');
+      }
+      sanitized.taxRate = Math.round(rate * 10000) / 10000;
+    }
+    if (updates.serviceChargeRate !== undefined) {
+      const rate = Number(updates.serviceChargeRate);
+      if (!Number.isFinite(rate) || rate < 0 || rate > 1) {
+        throw new Error('Service charge rate must be a decimal between 0 and 1 (e.g. 0.10 for 10%)');
+      }
+      sanitized.serviceChargeRate = Math.round(rate * 10000) / 10000;
+    }
+    if (updates.allowGuestOrdering !== undefined) {
+      sanitized.allowGuestOrdering = Boolean(updates.allowGuestOrdering);
+    }
+    if (updates.kitchenAudioAlert !== undefined) {
+      sanitized.kitchenAudioAlert = Boolean(updates.kitchenAudioAlert);
+    }
+    if (updates.showPricesOnCustomerMenu !== undefined) {
+      sanitized.showPricesOnCustomerMenu = Boolean(updates.showPricesOnCustomerMenu);
+    }
+    if (updates.address !== undefined) {
+      sanitized.address = String(updates.address).trim().slice(0, 200);
+    }
+    if (updates.phone !== undefined) {
+      sanitized.phone = String(updates.phone).trim().slice(0, 40);
+    }
+
+    const updatedKeys = Object.keys(sanitized);
+    if (updatedKeys.length === 0) {
+      return this.data.settings;
+    }
+
+    this.data.settings = { ...this.data.settings, ...sanitized };
+    this.addAuditLog('UPDATE_SETTINGS', 'system', `System settings updated: ${updatedKeys.join(', ')}`, staffName);
     this.persist();
     return this.data.settings;
   }
@@ -181,7 +308,8 @@ class CafeDatabase {
   }
 
   getStaffUsersForAdmin(): StaffUser[] {
-    return this.data.staffUsers.map(u => ({ ...u }));
+    // Write-only PIN policy: never expose plaintext PIN credentials in API responses
+    return this.data.staffUsers.map(u => ({ ...u, pin: '••••' }));
   }
 
   authenticate(input: { username?: string; pin?: string; credential?: string } | string): StaffUser | null {
@@ -198,9 +326,20 @@ class CafeDatabase {
     if (!cleanPin) return null;
 
     if (cleanUsername) {
-      const user = this.data.staffUsers.find(
-        u => u.active && u.username.toLowerCase() === cleanUsername && u.pin === cleanPin
-      );
+      const user = this.data.staffUsers.find(u => {
+        if (!u.active || u.pin !== cleanPin) return false;
+        const storedUsername = u.username.toLowerCase();
+        if (storedUsername === cleanUsername) return true;
+        // Support both "gm" and "manager" login aliases for the General Manager (GM) account
+        if (
+          u.role === 'manager' &&
+          (storedUsername === 'gm' || storedUsername === 'manager') &&
+          (cleanUsername === 'gm' || cleanUsername === 'manager')
+        ) {
+          return true;
+        }
+        return false;
+      });
       return user ? { ...user } : null;
     }
 
@@ -233,26 +372,47 @@ class CafeDatabase {
 
     if (existingIndex >= 0) {
       const existing = this.data.staffUsers[existingIndex];
+      if (existing.username === 'admin') {
+        if (staffData.active === false) {
+          throw new Error('Primary administrator account cannot be deactivated');
+        }
+        if (staffData.role !== 'admin') {
+          throw new Error('Primary administrator account must retain the Admin role');
+        }
+      }
+
+      const rawPin = typeof staffData.pin === 'string' ? staffData.pin.trim() : '';
+      const isKeepingMaskedPin = !rawPin || rawPin === '••••';
+      if (!isKeepingMaskedPin && !/^[A-Za-z0-9]{4,8}$/.test(rawPin)) {
+        throw new Error('Security PIN must be 4 to 8 alphanumeric characters');
+      }
+
       const updated: StaffUser = {
         ...existing,
-        name: staffData.name.trim(),
-        username: cleanUsername,
+        name: staffData.name.trim().slice(0, 80),
+        username: cleanUsername.slice(0, 40),
         role: staffData.role,
-        pin: staffData.pin ? staffData.pin.trim() : existing.pin,
-        active: staffData.active !== undefined ? staffData.active : existing.active
+        pin: isKeepingMaskedPin ? existing.pin : rawPin,
+        active: staffData.active !== undefined ? Boolean(staffData.active) : existing.active
       };
       this.data.staffUsers[existingIndex] = updated;
       this.addAuditLog('UPDATE_STAFF', 'system', `Updated staff account ${updated.name} (${updated.username}, role: ${updated.role})`, changedByStaffName);
       this.persist();
       return updated;
     } else {
+      const rawPin = typeof staffData.pin === 'string' ? staffData.pin.trim() : '';
+      const effectivePin = rawPin && rawPin !== '••••' ? rawPin : '';
+      if (!effectivePin || !/^[A-Za-z0-9]{4,8}$/.test(effectivePin)) {
+        throw new Error('A 4 to 8 character security PIN is required when creating a staff account');
+      }
+
       const newStaff: StaffUser = {
-        id: staffData.id || `usr_${Date.now()}`,
-        name: staffData.name.trim(),
-        username: cleanUsername,
+        id: staffData.id || `usr_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+        name: staffData.name.trim().slice(0, 80),
+        username: cleanUsername.slice(0, 40),
         role: staffData.role,
-        pin: staffData.pin ? staffData.pin.trim() : '1234',
-        active: staffData.active !== undefined ? staffData.active : true
+        pin: effectivePin,
+        active: staffData.active !== undefined ? Boolean(staffData.active) : true
       };
       this.data.staffUsers.push(newStaff);
       this.addAuditLog('CREATE_STAFF', 'system', `Created staff account ${newStaff.name} (${newStaff.username}, role: ${newStaff.role})`, changedByStaffName);
@@ -481,10 +641,10 @@ class CafeDatabase {
     this.updateTableStatus(tableId, 'occupied', sessionId);
 
     // Also initialize an empty bill for this session
-    const billId = `bill_${Date.now()}`;
+    const billId = `bill_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
     const newBill: Bill = {
       id: billId,
-      billNumber: `INV-${Date.now().toString().slice(-6)}`,
+      billNumber: this.generateUniqueBillNumber(),
       sessionId,
       tableId,
       tableNumber: table.tableNumber,
@@ -555,22 +715,27 @@ class CafeDatabase {
       throw new Error(`Invalid table: ${cleanTableId}`);
     }
 
-    // Enforce table QR security token BEFORE returning any idempotent record so guests cannot probe keys without token
-    if (requireValidTableToken) {
-      if (!table.tableToken || !tableToken || String(tableToken).trim() !== table.tableToken) {
+    const cleanProvidedToken = tableToken !== undefined && tableToken !== null ? String(tableToken).trim() : '';
+    const isAnonymousTakeawayOrder = cleanTableId === 'TAKEAWAY' && !placedByStaffName && !cleanProvidedToken;
+
+    // Enforce table QR security token on all dine-in tables (and reject forged tokens on any table including TAKEAWAY)
+    if (requireValidTableToken && !isAnonymousTakeawayOrder) {
+      if (!table.tableToken || !cleanProvidedToken || cleanProvidedToken !== table.tableToken) {
         const err: any = new Error(
           `Forbidden: Valid table QR code scan is required to place an order for ${table.tableNumber}.`
         );
         err.statusCode = 403;
         throw err;
       }
-    } else if (table.tableToken && tableToken !== undefined && String(tableToken).trim() !== table.tableToken) {
+    } else if (table.tableToken && cleanProvidedToken !== '' && cleanProvidedToken !== table.tableToken) {
       const err: any = new Error(
         `Security verification failed for ${table.tableNumber}. The table token does not match.`
       );
       err.statusCode = 403;
       throw err;
     }
+
+    this.pruneExpiredIdempotencyKeys();
 
     // Check idempotency (scoped to matching tableId)
     if (idempotencyKey && typeof idempotencyKey === 'string' && this.data.idempotencyKeys[idempotencyKey]) {
@@ -702,17 +867,43 @@ class CafeDatabase {
       });
     }
 
-    // Only create/open dining session AFTER all validations pass!
-    const session = this.getOrCreateActiveSession(table.id);
+    // Privacy Isolation: Anonymous takeaway/counter orders ALWAYS get an isolated session & bill
+    // so separate anonymous guests never share a session or view one another's items.
+    let session: DiningSession;
+    if (table.id === 'TAKEAWAY' && !placedByStaffName) {
+      const sessionId = `ses_anon_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+      session = {
+        id: sessionId,
+        tableId: table.id,
+        tableNumber: 'Anonymous Pickup',
+        status: 'active',
+        startedAt: new Date().toISOString(),
+        guestCount: 1,
+        orderRoundIds: []
+      };
+      this.data.diningSessions.push(session);
+    } else {
+      session = this.getOrCreateActiveSession(table.id);
+    }
 
     const roundCount = session.orderRoundIds.length + 1;
-    const orderNumber = `#HQC-${table.id}-${Date.now().toString().slice(-4)}`;
+    const orderPrefix = table.id === 'TAKEAWAY' ? 'ANON' : table.id;
+    const orderNumber = this.generateUniqueOrderNumber(orderPrefix);
+    const trackingToken = `trk_${crypto.randomBytes(24).toString('hex')}`;
+    const orderMode: OrderMode = placedByStaffName
+      ? 'counter'
+      : table.id === 'TAKEAWAY'
+      ? 'anonymous_pickup'
+      : 'table_qr';
 
     const newOrder: OrderRound = {
-      id: `ord_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+      id: `ord_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
       orderNumber,
       sessionId: session.id,
       tableId: table.id,
+      tableNumber: table.id === 'TAKEAWAY' ? 'Anonymous Counter Pickup' : table.tableNumber,
+      orderMode,
+      anonymousLabel: 'Anonymous Guest',
       roundNumber: roundCount,
       items: validatedOrderItems,
       subtotal: roundSubtotal,
@@ -720,7 +911,8 @@ class CafeDatabase {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       customerNote: typeof customerNote === 'string' ? customerNote.trim().slice(0, 300) || undefined : undefined,
-      idempotencyKey
+      idempotencyKey,
+      trackingToken
     };
 
     this.data.orderRounds.push(newOrder);
@@ -734,15 +926,15 @@ class CafeDatabase {
       };
     }
 
-    // Update bill
+    // Update or create isolated bill
     let bill = this.getBillBySessionId(session.id);
     if (!bill) {
       bill = {
-        id: `bill_${Date.now()}`,
-        billNumber: `INV-${Date.now().toString().slice(-6)}`,
+        id: `bill_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+        billNumber: this.generateUniqueBillNumber(),
         sessionId: session.id,
         tableId: table.id,
-        tableNumber: table.tableNumber,
+        tableNumber: table.id === 'TAKEAWAY' ? `Anonymous Pickup (${orderNumber})` : table.tableNumber,
         orderRoundIds: [newOrder.id],
         subtotal: 0,
         discount: null,
@@ -771,9 +963,9 @@ class CafeDatabase {
     this.addAuditLog(
       'ORDER_PLACED',
       'order',
-      `Order ${newOrder.orderNumber} placed for ${table.tableNumber} (Round ${roundCount}): ${validatedOrderItems.length} items, total Nu. ${roundSubtotal}`,
-      'Guest / Customer',
-      { orderId: newOrder.id, tableId: table.id, subtotal: roundSubtotal }
+      `Anonymous order ${newOrder.orderNumber} placed (${newOrder.tableNumber}, Round ${roundCount}): ${validatedOrderItems.length} items, subtotal Nu. ${roundSubtotal}`,
+      placedByStaffName || 'Anonymous Guest (Zero PII)',
+      { orderId: newOrder.id, tableId: table.id, orderMode, subtotal: roundSubtotal }
     );
 
     this.persist();
@@ -788,7 +980,143 @@ class CafeDatabase {
     return [...this.data.orderRounds].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
-  // --- Kitchen Display System (KDS) Workflows ---
+  /**
+   * Constant-time verified lookup for anonymous order tracking tokens on the user's device.
+   * Never allows enumeration by orderNumber or id alone.
+   */
+  getOrdersByTrackingTokens(tokens: string[]): OrderRound[] {
+    const validTokens = tokens
+      .filter(t => typeof t === 'string' && t.trim().startsWith('trk_') && t.trim().length >= 16)
+      .map(t => t.trim())
+      .slice(0, 25);
+
+    if (validTokens.length === 0) return [];
+
+    const matched: OrderRound[] = [];
+    for (const order of this.data.orderRounds) {
+      if (!order.trackingToken) continue;
+      const orderBuf = Buffer.from(order.trackingToken);
+      const isMatch = validTokens.some(tok => {
+        const tokBuf = Buffer.from(tok);
+        return tokBuf.length === orderBuf.length && crypto.timingSafeEqual(tokBuf, orderBuf);
+      });
+      if (isMatch) {
+        matched.push(order);
+      }
+    }
+
+    return matched.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  /**
+   * Confidential Complete Order History query — strictly for GM (manager) and Admin roles.
+   */
+  getCompleteOrderHistory(filters: {
+    status?: string;
+    tableId?: string;
+    search?: string;
+    dateRange?: string;
+  } = {}): { orders: OrderHistoryRecord[]; summary: OrderHistorySummary } {
+    const allSorted = this.getAllOrderRounds();
+    const tableMap = new Map(this.data.tables.map(t => [t.id, t]));
+    const billBySession = new Map(this.data.bills.map(b => [b.sessionId, b]));
+
+    const now = Date.now();
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    // Compute overall summary across all confidential records
+    let activeOrders = 0;
+    let completedOrders = 0;
+    let cancelledOrders = 0;
+    let totalOrderValue = 0;
+
+    for (const o of allSorted) {
+      if (o.status === 'cancelled') {
+        cancelledOrders++;
+      } else if (o.status === 'served') {
+        completedOrders++;
+        totalOrderValue += o.subtotal;
+      } else {
+        activeOrders++;
+        totalOrderValue += o.subtotal;
+      }
+    }
+
+    const statusFilter = (filters.status || 'all').trim().toLowerCase();
+    const tableFilter = (filters.tableId || 'all').trim().toUpperCase();
+    const searchFilter = (filters.search || '').trim().toLowerCase();
+    const dateRange = (filters.dateRange || 'all').trim().toLowerCase();
+
+    const filtered = allSorted.filter(order => {
+      if (statusFilter && statusFilter !== 'all') {
+        if (statusFilter === 'active') {
+          if (order.status === 'served' || order.status === 'cancelled') return false;
+        } else if (order.status !== statusFilter) {
+          return false;
+        }
+      }
+
+      if (tableFilter && tableFilter !== 'ALL' && order.tableId !== tableFilter) {
+        return false;
+      }
+
+      if (dateRange && dateRange !== 'all') {
+        const createdMs = new Date(order.createdAt).getTime();
+        if (dateRange === 'today' && createdMs < startOfToday.getTime()) return false;
+        if (dateRange === '7d' && createdMs < now - 7 * 24 * 60 * 60 * 1000) return false;
+        if (dateRange === '30d' && createdMs < now - 30 * 24 * 60 * 60 * 1000) return false;
+      }
+
+      if (searchFilter) {
+        const matchesNum = order.orderNumber.toLowerCase().includes(searchFilter);
+        const matchesId = order.id.toLowerCase().includes(searchFilter);
+        const matchesTable = (order.tableNumber || order.tableId).toLowerCase().includes(searchFilter);
+        const matchesDish = order.items.some(it => it.name.toLowerCase().includes(searchFilter));
+        const matchesNote = (order.customerNote || '').toLowerCase().includes(searchFilter);
+        if (!matchesNum && !matchesId && !matchesTable && !matchesDish && !matchesNote) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    const records: OrderHistoryRecord[] = filtered.map(order => {
+      const { idempotencyKey: _idemp, trackingToken: _trk, ...safeOrder } = order;
+      const table = tableMap.get(order.tableId);
+      const bill = billBySession.get(order.sessionId);
+
+      return {
+        ...safeOrder,
+        anonymousLabel: order.anonymousLabel || 'Anonymous Guest',
+        orderMode: order.orderMode || (order.tableId === 'TAKEAWAY' ? 'anonymous_pickup' : 'table_qr'),
+        tableNumber:
+          order.tableNumber ||
+          (order.tableId === 'TAKEAWAY' ? 'Anonymous Counter Pickup' : table?.tableNumber || order.tableId),
+        section: table?.section || (order.tableId === 'TAKEAWAY' ? 'Quick Pick-up' : 'Main Hall'),
+        billId: bill?.id,
+        billNumber: bill?.billNumber,
+        billStatus: bill?.status,
+        billTotal: bill?.total,
+        billPaidAmount: bill?.paidAmount,
+        billBalanceDue: bill?.balanceDue
+      };
+    });
+
+    return {
+      orders: records,
+      summary: {
+        totalOrders: allSorted.length,
+        activeOrders,
+        completedOrders,
+        cancelledOrders,
+        totalOrderValue: Math.round(totalOrderValue * 100) / 100
+      }
+    };
+  }
+
+  // --- Kitchen Display System (KDS) & Order Status Workflows ---
   updateOrderItemKitchenStatus(orderId: string, itemId: string, status: OrderItemKitchenStatus, rejectionReason?: string, staffName = 'Kitchen'): OrderRound {
     const order = this.getOrderRound(orderId);
     if (!order) throw new Error(`Order ${orderId} not found`);
@@ -816,9 +1144,15 @@ class CafeDatabase {
   }
 
   updateOrderStatus(orderId: string, status: OrderStatus, staffName = 'Staff'): OrderRound {
+    const validStatuses: OrderStatus[] = ['submitted', 'acknowledged', 'preparing', 'ready', 'served', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      throw new Error(`Invalid order status: ${status}`);
+    }
+
     const order = this.getOrderRound(orderId);
     if (!order) throw new Error(`Order ${orderId} not found`);
 
+    const previousStatus = order.status;
     order.status = status;
     order.updatedAt = new Date().toISOString();
 
@@ -833,7 +1167,20 @@ class CafeDatabase {
       });
     }
 
-    this.addAuditLog('ORDER_STATUS_UPDATE', 'order', `Order ${order.orderNumber} changed to ${status}`, staffName);
+    // Recalculate linked bill if order was cancelled or restored from cancelled
+    if (previousStatus === 'cancelled' || status === 'cancelled') {
+      const session = this.getSession(order.sessionId);
+      if (session?.billId) {
+        this.recalculateBill(session.billId);
+      }
+    }
+
+    this.addAuditLog(
+      status === 'cancelled' ? 'ORDER_CANCELLED' : 'ORDER_STATUS_UPDATE',
+      status === 'cancelled' ? 'cancellation' : 'order',
+      `Order ${order.orderNumber} changed from ${previousStatus} to ${status}`,
+      staffName
+    );
     this.persist();
     return order;
   }

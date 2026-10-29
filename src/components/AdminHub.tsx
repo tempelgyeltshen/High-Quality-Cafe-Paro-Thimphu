@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   TrendingUp,
-  DollarSign,
   ShoppingBag,
   Clock,
   Download,
@@ -11,34 +10,30 @@ import {
   CheckCircle,
   AlertTriangle,
   History,
-  FileSpreadsheet,
   X,
   Search,
-  Filter,
-  Check,
   Users,
   Shield,
   ChefHat,
   CreditCard,
   QrCode,
-  Printer,
-  ExternalLink,
-  KeyRound,
-  Lock,
-  Layers
+  Layers,
+  Utensils
 } from 'lucide-react';
 import {
   MenuItem,
   MenuCategory,
   SystemSettings,
   DietType,
-  PriceAuditLog,
   StaffUser,
   RestaurantTable,
   Role
 } from '../types/index.ts';
-import { api } from '../lib/api.ts';
+import { api, downloadProtectedCsv } from '../lib/api.ts';
 import { TableQRManagement } from './TableQRManagement.tsx';
+import { OrderHistoryView } from './OrderHistoryView.tsx';
+
+type HubTab = 'orders' | 'reports' | 'menu' | 'staff' | 'tables' | 'price_audits' | 'system_logs' | 'settings';
 
 interface AdminHubProps {
   menuItems: MenuItem[];
@@ -46,6 +41,7 @@ interface AdminHubProps {
   settings: SystemSettings;
   currentUser: StaffUser | null;
   tables: RestaurantTable[];
+  liveOrderSignal?: number;
   onSaveMenuItem: (item: Partial<MenuItem>) => Promise<void>;
   onToggleAvailability: (id: string, isAvailable: boolean, soldOut: boolean) => Promise<void>;
   onDeleteMenuItem: (id: string) => Promise<void>;
@@ -56,12 +52,20 @@ interface AdminHubProps {
   onSelectTableForCustomerView?: (tableId: string, token?: string) => void;
 }
 
+const DIET_LABELS: Record<DietType, string> = {
+  veg: 'Vegetarian',
+  'non-veg': 'Non-Vegetarian',
+  vegan: 'Vegan',
+  egg: 'Contains Egg'
+};
+
 export const AdminHub: React.FC<AdminHubProps> = ({
   menuItems,
   categories,
   settings,
   currentUser,
   tables,
+  liveOrderSignal = 0,
   onSaveMenuItem,
   onToggleAvailability,
   onDeleteMenuItem,
@@ -71,37 +75,46 @@ export const AdminHub: React.FC<AdminHubProps> = ({
   onRefreshData,
   onSelectTableForCustomerView
 }) => {
-  const [activeTab, setActiveTab] = useState<'reports' | 'menu' | 'staff' | 'tables' | 'price_audits' | 'system_logs' | 'settings'>('reports');
+  const isAdmin = currentUser?.role === 'admin';
+  const [activeTab, setActiveTab] = useState<HubTab>('orders');
   const [reportsData, setReportsData] = useState<any>(null);
   const [auditLogs, setAuditLogs] = useState<{ generalLogs: any[]; priceLogs: any[] }>({ generalLogs: [], priceLogs: [] });
   const [isLoadingReports, setIsLoadingReports] = useState(false);
   const [settingForm, setSettingForm] = useState(settings);
   const [settingsSaved, setSettingsSaved] = useState(false);
+  const [hubNotice, setHubNotice] = useState<{ type: 'error' | 'success'; message: string } | null>(null);
+  const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
+  const [pendingDelete, setPendingDelete] = useState<{
+    kind: 'staff' | 'table' | 'dish';
+    id: string;
+    label: string;
+  } | null>(null);
 
-  // Staff management state
   const [staffUsers, setStaffUsers] = useState<StaffUser[]>([]);
-  const [isLoadingStaff, setIsLoadingStaff] = useState(false);
   const [editingStaff, setEditingStaff] = useState<Partial<StaffUser> | null>(null);
   const [staffError, setStaffError] = useState<string | null>(null);
 
-  // Table management state
   const [tablesWithQR, setTablesWithQR] = useState<Array<RestaurantTable & { qrUrl: string; qrCodeDataUrl: string }>>([]);
-  const [isLoadingTables, setIsLoadingTables] = useState(false);
   const [editingTable, setEditingTable] = useState<Partial<RestaurantTable> | null>(null);
   const [tableError, setTableError] = useState<string | null>(null);
 
-  // Menu item editing state
   const [editingItem, setEditingItem] = useState<Partial<MenuItem> | null>(null);
   const [saveDishError, setSaveDishError] = useState<string | null>(null);
   const [menuSearch, setMenuSearch] = useState('');
   const [selectedCatFilter, setSelectedCatFilter] = useState('all');
 
   useEffect(() => {
+    setSettingForm(settings);
+  }, [settings]);
+
+  useEffect(() => {
     loadReports();
     loadAudits();
-    loadStaff();
     loadTables();
-  }, []);
+    if (isAdmin) {
+      loadStaff();
+    }
+  }, [isAdmin]);
 
   const loadReports = async () => {
     try {
@@ -126,25 +139,19 @@ export const AdminHub: React.FC<AdminHubProps> = ({
 
   const loadStaff = async () => {
     try {
-      setIsLoadingStaff(true);
       const data = await api.getAdminStaff();
       setStaffUsers(data);
     } catch (e) {
       console.error('Failed to load staff accounts', e);
-    } finally {
-      setIsLoadingStaff(false);
     }
   };
 
   const loadTables = async () => {
     try {
-      setIsLoadingTables(true);
       const data = await api.getTablesWithQR();
       setTablesWithQR(data);
     } catch (e) {
       console.error('Failed to load tables with QR', e);
-    } finally {
-      setIsLoadingTables(false);
     }
   };
 
@@ -170,12 +177,12 @@ export const AdminHub: React.FC<AdminHubProps> = ({
   const handleSaveDish = async () => {
     if (!editingItem) return;
     if (!editingItem.name || editingItem.name.trim().length < 2) {
-      setSaveDishError('Dish name must be at least 2 characters long');
+      setSaveDishError('Dish name must be at least 2 characters long.');
       return;
     }
     const priceNum = Number(editingItem.price);
     if (isNaN(priceNum) || priceNum < 0) {
-      setSaveDishError('Price must be a valid non-negative number');
+      setSaveDishError('Price must be a valid non-negative number.');
       return;
     }
 
@@ -193,15 +200,14 @@ export const AdminHub: React.FC<AdminHubProps> = ({
     }
   };
 
-  // Staff Save & Delete
   const handleSaveStaff = async () => {
     if (!editingStaff) return;
     if (!editingStaff.name || editingStaff.name.trim().length < 2) {
-      setStaffError('Staff member name must be at least 2 characters long');
+      setStaffError('Staff member name must be at least 2 characters long.');
       return;
     }
     if (!editingStaff.username || editingStaff.username.trim().length < 2) {
-      setStaffError('Username must be at least 2 characters long');
+      setStaffError('Username must be at least 2 characters long.');
       return;
     }
     try {
@@ -215,22 +221,39 @@ export const AdminHub: React.FC<AdminHubProps> = ({
     }
   };
 
-  const handleDeleteStaff = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this staff account?')) return;
+  const handleConfirmDelete = async () => {
+    if (!pendingDelete) return;
+    const target = pendingDelete;
+    setPendingDelete(null);
+    setHubNotice(null);
+
     try {
-      await api.deleteAdminStaff(id);
-      await loadStaff();
-      onRefreshData?.();
+      if (target.kind === 'staff') {
+        await api.deleteAdminStaff(target.id);
+        await loadStaff();
+        onRefreshData?.();
+        setHubNotice({ type: 'success', message: `Deleted staff account "${target.label}".` });
+      } else if (target.kind === 'table') {
+        await api.deleteAdminTable(target.id);
+        await loadTables();
+        onRefreshData?.();
+        setHubNotice({ type: 'success', message: `Deleted table "${target.label}".` });
+      } else if (target.kind === 'dish') {
+        await onDeleteMenuItem(target.id);
+        setHubNotice({ type: 'success', message: `Deleted dish "${target.label}".` });
+      }
     } catch (err: any) {
-      alert(err.message || 'Failed to delete staff account');
+      setHubNotice({
+        type: 'error',
+        message: err.message || `Failed to delete ${target.label}`
+      });
     }
   };
 
-  // Table Save & Delete
   const handleSaveTable = async () => {
     if (!editingTable) return;
     if (!editingTable.tableNumber || editingTable.tableNumber.trim().length === 0) {
-      setTableError('Table number/name is required');
+      setTableError('Table number or name is required.');
       return;
     }
     try {
@@ -244,14 +267,16 @@ export const AdminHub: React.FC<AdminHubProps> = ({
     }
   };
 
-  const handleDeleteTable = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this table?')) return;
+  const handleExportSalesCsv = async () => {
     try {
-      await api.deleteAdminTable(id);
-      await loadTables();
-      onRefreshData?.();
+      setHubNotice(null);
+      const dateStamp = new Date().toISOString().slice(0, 10);
+      await downloadProtectedCsv(
+        '/api/admin/reports/export-csv',
+        `high_quality_cafe_sales_${dateStamp}.csv`
+      );
     } catch (err: any) {
-      alert(err.message || 'Failed to delete table');
+      setHubNotice({ type: 'error', message: err.message || 'Failed to export sales CSV' });
     }
   };
 
@@ -261,159 +286,194 @@ export const AdminHub: React.FC<AdminHubProps> = ({
     return true;
   });
 
-  const getRoleBadge = (role: Role) => {
+  const getRoleLabel = (role: Role) => {
     switch (role) {
       case 'kitchen':
-        return <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300">Kitchen Cook</span>;
+        return <span className="text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">Kitchen Cook</span>;
       case 'cashier':
-        return <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-800 border border-blue-300">Counter Staff</span>;
+        return <span className="text-xs font-semibold text-sky-900 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded-md">Counter Staff</span>;
       case 'admin':
-        return <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-purple-100 text-purple-800 border border-purple-300">Administrator</span>;
+        return <span className="text-xs font-bold text-teal-900 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-md">Admin</span>;
       case 'manager':
-        return <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">Floor Manager</span>;
+        return <span className="text-xs font-bold text-emerald-900 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">General Manager</span>;
     }
   };
 
+  const availableTabs: Array<{ id: HubTab; label: string; icon: any }> = [
+    { id: 'orders', label: 'Order History', icon: Layers },
+    { id: 'reports', label: 'Reports & Revenue', icon: TrendingUp },
+    { id: 'menu', label: 'Menu & Dishes', icon: ShoppingBag },
+    ...(isAdmin ? [{ id: 'staff' as HubTab, label: 'Staff & Roles', icon: Users }] : []),
+    { id: 'tables', label: 'Tables & QR Cards', icon: QrCode },
+    { id: 'price_audits', label: 'Price Audits', icon: History },
+    { id: 'system_logs', label: 'System Logs', icon: Clock },
+    ...(isAdmin ? [{ id: 'settings' as HubTab, label: 'Settings', icon: Shield }] : [])
+  ];
+
   return (
-    <div className="min-h-screen bg-stone-100 text-stone-900 pb-20">
-      {/* Top Header */}
-      <div className="bg-white border-b border-stone-200 px-4 sm:px-6 py-4 shadow-xs no-print">
+    <div className="min-h-screen bg-stone-50 text-stone-900 pb-20">
+      {/* Top Header & Sub-Navigation */}
+      <div className="bg-white border-b border-stone-200 px-4 sm:px-6 pt-5 no-print">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-stone-900 font-display">
-                Administrator Control Center
-              </h1>
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold bg-stone-900 text-amber-400">
-                ROLE: ADMIN
+          <div className="space-y-0.5">
+            <div className="text-xs text-stone-500 flex items-center gap-2">
+              <span className="font-semibold text-teal-800">
+                {isAdmin ? 'Administrator' : 'General Manager (GM)'}
               </span>
+              <span aria-hidden="true">·</span>
+              <span>Management Workspace</span>
             </div>
-            <p className="text-xs text-stone-500">
-              High Quality Cafe · Full System Management, Staff Accounts, Tables, and Financial Audits
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-stone-900 font-display">
+              {isAdmin ? 'Administrator Control Center' : 'General Manager Console'}
+            </h1>
+            <p className="text-xs sm:text-sm text-stone-500">
+              {isAdmin
+                ? 'Confidential order history, revenue reports, menu catalog, staff credentials, and café policies.'
+                : 'Confidential order history, live status controls, menu availability, and revenue reports.'}
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <a
-              href="/api/admin/reports/export-csv"
-              download
-              className="px-3.5 py-2 bg-stone-900 hover:bg-stone-800 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-xs transition-colors"
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <button
+              type="button"
+              onClick={handleExportSalesCsv}
+              className="min-h-[42px] px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold rounded-xl flex items-center gap-2 transition-colors cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
               <span>Export Sales CSV</span>
-            </a>
+            </button>
           </div>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="max-w-7xl mx-auto mt-4 flex items-center gap-1 sm:gap-2 border-b border-stone-200 overflow-x-auto pb-1">
-          {[
-            { id: 'reports', label: 'Reports & Revenue', icon: TrendingUp },
-            { id: 'menu', label: 'Menu & Dishes', icon: ShoppingBag },
-            { id: 'staff', label: 'Staff Accounts & Roles', icon: Users },
-            { id: 'tables', label: 'Tables & QR Cards', icon: QrCode },
-            { id: 'price_audits', label: 'Price Audits', icon: History },
-            { id: 'system_logs', label: 'System Logs', icon: Clock },
-            { id: 'settings', label: 'Restaurant Settings', icon: Shield },
-          ].map(t => {
+        <nav
+          aria-label="Management sections"
+          className="max-w-7xl mx-auto mt-5 flex items-center gap-1 sm:gap-2 overflow-x-auto scrollbar-none"
+        >
+          {availableTabs.map(t => {
             const Icon = t.icon;
+            const isActive = activeTab === t.id;
             return (
               <button
                 key={t.id}
-                onClick={() => setActiveTab(t.id as any)}
-                className={`px-3 py-2 text-xs font-semibold whitespace-nowrap transition-colors border-b-2 -mb-1 flex items-center gap-1.5 ${
-                  activeTab === t.id
-                    ? 'border-amber-600 text-amber-800 font-bold bg-amber-50/50 rounded-t-lg'
-                    : 'border-transparent text-stone-500 hover:text-stone-900'
+                type="button"
+                onClick={() => setActiveTab(t.id)}
+                className={`min-h-[44px] px-3.5 py-2.5 text-xs font-semibold whitespace-nowrap transition-colors border-b-2 flex items-center gap-2 cursor-pointer ${
+                  isActive
+                    ? 'border-teal-700 text-teal-900 font-bold bg-teal-50/40 rounded-t-lg'
+                    : 'border-transparent text-stone-600 hover:text-stone-900 hover:bg-stone-50 rounded-t-lg'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5" />
+                <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-teal-700' : 'text-stone-400'}`} />
                 <span>{t.label}</span>
               </button>
             );
           })}
-        </div>
+        </nav>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {hubNotice && (
+          <div
+            role="status"
+            className={`p-3.5 rounded-xl border text-xs flex items-center justify-between gap-3 ${
+              hubNotice.type === 'error'
+                ? 'bg-rose-50 border-rose-200 text-rose-900'
+                : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {hubNotice.type === 'error' ? (
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+              ) : (
+                <CheckCircle className="w-4 h-4 shrink-0 text-emerald-600" />
+              )}
+              <span>{hubNotice.message}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setHubNotice(null)}
+              className="font-semibold px-2 py-1 hover:underline cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {/* TAB 0: COMPLETE ORDER HISTORY */}
+        {activeTab === 'orders' && (
+          <OrderHistoryView
+            currentUser={currentUser}
+            tables={tables}
+            liveOrderSignal={liveOrderSignal}
+            onOrderUpdated={() => {
+              loadReports();
+              loadAudits();
+              onRefreshData?.();
+            }}
+          />
+        )}
+
         {/* TAB 1: REPORTS & REVENUE */}
         {activeTab === 'reports' && (
           <div className="space-y-6">
-            {reportsData ? (
+            {reportsData && !isLoadingReports ? (
               <>
-                {/* Metric Summary Cards */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                  <div className="bg-white rounded-2xl p-5 border border-stone-200/80 shadow-xs space-y-1">
-                    <span className="text-xs font-semibold text-stone-500 uppercase">
-                      Total Collected Revenue
-                    </span>
-                    <div className="text-2xl font-extrabold text-emerald-700 font-mono tabular-nums">
+                  <div className="bg-white rounded-2xl p-5 border border-stone-200 space-y-1">
+                    <span className="text-xs font-medium text-stone-500 block">Collected Revenue</span>
+                    <div className="text-2xl font-bold text-emerald-700 font-mono tabular-nums">
                       Nu. {reportsData.summary.totalCollectedSales}
                     </div>
-                    <p className="text-[11px] text-stone-400">
-                      From {reportsData.summary.paidBillsCount} settled bills
-                    </p>
+                    <p className="text-[11px] text-stone-500">From {reportsData.summary.paidBillsCount} settled bills</p>
                   </div>
 
-                  <div className="bg-white rounded-2xl p-5 border border-stone-200/80 shadow-xs space-y-1">
-                    <span className="text-xs font-semibold text-stone-500 uppercase">
-                      Outstanding Balances
-                    </span>
-                    <div className="text-2xl font-extrabold text-amber-700 font-mono tabular-nums">
+                  <div className="bg-white rounded-2xl p-5 border border-stone-200 space-y-1">
+                    <span className="text-xs font-medium text-stone-500 block">Outstanding Balances</span>
+                    <div className="text-2xl font-bold text-amber-800 font-mono tabular-nums">
                       Nu. {reportsData.summary.totalOutstandingBalance}
                     </div>
-                    <p className="text-[11px] text-stone-400">
-                      Across {reportsData.summary.openBillsCount} active tables
-                    </p>
+                    <p className="text-[11px] text-stone-500">Across {reportsData.summary.openBillsCount} open tables</p>
                   </div>
 
-                  <div className="bg-white rounded-2xl p-5 border border-stone-200/80 shadow-xs space-y-1">
-                    <span className="text-xs font-semibold text-stone-500 uppercase">
-                      Discounts Courtesy
-                    </span>
-                    <div className="text-2xl font-extrabold text-stone-900 font-mono tabular-nums">
+                  <div className="bg-white rounded-2xl p-5 border border-stone-200 space-y-1">
+                    <span className="text-xs font-medium text-stone-500 block">Authorized Discounts</span>
+                    <div className="text-2xl font-bold text-stone-900 font-mono tabular-nums">
                       Nu. {reportsData.summary.totalDiscountsGiven}
                     </div>
-                    <p className="text-[11px] text-stone-400">
-                      Authorized staff & promotional deductions
-                    </p>
+                    <p className="text-[11px] text-stone-500">Courtesy &amp; promotional deductions</p>
                   </div>
 
-                  <div className="bg-white rounded-2xl p-5 border border-stone-200/80 shadow-xs space-y-1">
-                    <span className="text-xs font-semibold text-stone-500 uppercase">
-                      Total Orders Placed
-                    </span>
-                    <div className="text-2xl font-extrabold text-stone-900 font-mono tabular-nums">
+                  <div className="bg-white rounded-2xl p-5 border border-stone-200 space-y-1">
+                    <span className="text-xs font-medium text-stone-500 block">Total Orders Placed</span>
+                    <div className="text-2xl font-bold text-stone-900 font-mono tabular-nums">
                       {reportsData.summary.totalOrders}
                     </div>
-                    <p className="text-[11px] text-stone-400">
-                      Via customer QR codes & counter
-                    </p>
+                    <p className="text-[11px] text-stone-500">Table QR &amp; counter channels</p>
                   </div>
                 </div>
 
-                {/* Popular Dishes & Categories */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* Top Selling Dishes */}
-                  <div className="bg-white rounded-2xl border border-stone-200/80 p-5 shadow-xs space-y-4">
-                    <h3 className="text-sm font-bold text-stone-900 uppercase tracking-wider">
-                      Best Selling Dishes & Drinks
-                    </h3>
-                    <div className="space-y-2 divide-y divide-stone-100">
+                  <div className="bg-white rounded-2xl border border-stone-200 p-5 sm:p-6 space-y-4">
+                    <div className="space-y-0.5">
+                      <h2 className="text-base font-bold text-stone-900 font-display">Top Ordered Dishes &amp; Drinks</h2>
+                      <p className="text-xs text-stone-500">Ranked by total portions prepared</p>
+                    </div>
+
+                    <div className="divide-y divide-stone-100">
                       {reportsData.popularDishes.length === 0 ? (
-                        <div className="text-xs text-stone-400 py-4 text-center">No orders recorded yet.</div>
+                        <div className="text-xs text-stone-500 py-8 text-center">No orders recorded yet.</div>
                       ) : (
                         reportsData.popularDishes.map((dish: any, idx: number) => (
-                          <div key={dish.id} className="pt-2 flex items-center justify-between text-xs">
-                            <div className="flex items-center gap-2">
-                              <span className="w-5 h-5 rounded-full bg-stone-100 text-stone-600 font-mono text-[11px] font-bold flex items-center justify-center">
+                          <div key={dish.id} className="py-3 first:pt-0 last:pb-0 flex items-center justify-between gap-3 text-xs sm:text-sm">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <span className="w-6 text-stone-400 font-mono tabular-nums text-xs font-semibold shrink-0">
                                 #{idx + 1}
                               </span>
-                              <span className="font-semibold text-stone-800">{dish.name}</span>
+                              <span className="font-semibold text-stone-900 truncate">{dish.name}</span>
                             </div>
-                            <div className="text-right">
-                              <span className="font-mono font-bold text-stone-900">{dish.quantity} orders</span>
-                              <span className="text-stone-400 block text-[11px]">Nu. {dish.revenue}</span>
+                            <div className="text-right shrink-0 font-mono tabular-nums">
+                              <span className="font-bold text-stone-900">{dish.quantity} sold</span>
+                              <span className="text-stone-500 block text-xs">Nu. {dish.revenue}</span>
                             </div>
                           </div>
                         ))
@@ -421,34 +481,48 @@ export const AdminHub: React.FC<AdminHubProps> = ({
                     </div>
                   </div>
 
-                  {/* Category Revenue Breakdown */}
-                  <div className="bg-white rounded-2xl border border-stone-200/80 p-5 shadow-xs space-y-4">
-                    <h3 className="text-sm font-bold text-stone-900 uppercase tracking-wider">
-                      Revenue by Menu Category
-                    </h3>
-                    <div className="space-y-3">
-                      {reportsData.categoryBreakdown.map((cat: any) => (
-                        <div key={cat.categoryId} className="space-y-1">
-                          <div className="flex justify-between text-xs font-semibold">
-                            <span>{cat.categoryName}</span>
-                            <span className="font-mono">Nu. {cat.revenue}</span>
+                  {/* Category Revenue Breakdown (Pure SVG Proportional Bar — Zero Inline Styles) */}
+                  <div className="bg-white rounded-2xl border border-stone-200 p-5 sm:p-6 space-y-4">
+                    <div className="space-y-0.5">
+                      <h2 className="text-base font-bold text-stone-900 font-display">Revenue by Menu Category</h2>
+                      <p className="text-xs text-stone-500">Share of collected food &amp; beverage sales</p>
+                    </div>
+
+                    <div className="space-y-4">
+                      {reportsData.categoryBreakdown.map((cat: any) => {
+                        const maxCatRevenue = Math.max(
+                          1,
+                          ...reportsData.categoryBreakdown.map((c: any) => Number(c.revenue) || 0)
+                        );
+                        const barPct = Math.min(100, Math.max(0, ((Number(cat.revenue) || 0) / maxCatRevenue) * 100));
+
+                        return (
+                          <div key={cat.categoryId} className="space-y-1.5">
+                            <div className="flex justify-between items-baseline text-xs sm:text-sm">
+                              <span className="font-semibold text-stone-800">{cat.categoryName}</span>
+                              <span className="font-mono tabular-nums font-bold text-stone-900">
+                                Nu. {cat.revenue}
+                              </span>
+                            </div>
+                            <svg
+                              viewBox="0 0 100 3"
+                              preserveAspectRatio="none"
+                              aria-hidden="true"
+                              className="w-full h-2 rounded-full overflow-hidden bg-stone-100 block"
+                            >
+                              <rect x="0" y="0" width={barPct} height="3" className="fill-teal-700" />
+                            </svg>
                           </div>
-                          <div className="w-full bg-stone-100 h-2 rounded-full overflow-hidden">
-                            <div
-                              className="bg-amber-600 h-full rounded-full transition-all"
-                              style={{
-                                width: `${Math.min(100, reportsData.summary.totalCollectedSales > 0 ? (cat.revenue / reportsData.summary.totalCollectedSales) * 100 : 0)}%`
-                              }}
-                            />
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
               </>
             ) : (
-              <div className="p-8 text-center text-xs text-stone-400">Loading reports...</div>
+              <div className="bg-white rounded-2xl border border-stone-200 p-12 text-center text-xs text-stone-500">
+                Loading financial reports...
+              </div>
             )}
           </div>
         )}
@@ -456,23 +530,26 @@ export const AdminHub: React.FC<AdminHubProps> = ({
         {/* TAB 2: MENU & DISHES */}
         {activeTab === 'menu' && (
           <div className="space-y-5">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="relative">
-                  <Search className="w-4 h-4 text-stone-400 absolute left-3 top-2.5" />
+            <div className="bg-white rounded-2xl border border-stone-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 flex-1">
+                <div className="relative flex-1 sm:max-w-xs">
+                  <label htmlFor="admin-menu-search" className="sr-only">Search menu dishes</label>
+                  <Search className="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
+                    id="admin-menu-search"
                     type="text"
                     value={menuSearch}
                     onChange={(e) => setMenuSearch(e.target.value)}
                     placeholder="Search dishes..."
-                    className="pl-9 pr-3 py-1.5 text-xs bg-white border border-stone-200 rounded-xl focus:outline-none focus:border-amber-500 w-48"
+                    className="w-full h-11 pl-10 pr-3.5 text-xs sm:text-sm bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
 
                 <select
+                  aria-label="Filter dishes by category"
                   value={selectedCatFilter}
                   onChange={(e) => setSelectedCatFilter(e.target.value)}
-                  className="px-3 py-1.5 text-xs bg-white border border-stone-200 rounded-xl"
+                  className="h-11 px-3.5 text-xs sm:text-sm bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                 >
                   <option value="all">All Categories ({menuItems.length})</option>
                   {categories.map(c => (
@@ -482,130 +559,227 @@ export const AdminHub: React.FC<AdminHubProps> = ({
               </div>
 
               <button
+                type="button"
                 onClick={openNewDish}
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-xs transition-colors self-start sm:self-auto"
+                className="min-h-[44px] px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-2 transition-colors cursor-pointer shrink-0"
               >
-                <Plus className="w-3.5 h-3.5" />
+                <Plus className="w-4 h-4" />
                 <span>Add New Dish</span>
               </button>
             </div>
 
-            {/* Menu Items Table */}
-            <div className="bg-white rounded-2xl border border-stone-200/80 shadow-xs overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-stone-50 border-b border-stone-200 text-stone-500 uppercase font-bold text-[11px]">
-                    <tr>
-                      <th className="py-3 px-4">Dish</th>
-                      <th className="py-3 px-4">Category</th>
-                      <th className="py-3 px-4">Official Price</th>
-                      <th className="py-3 px-4">Kitchen Availability</th>
-                      <th className="py-3 px-4">Diet</th>
-                      <th className="py-3 px-4 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-100">
+            <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden">
+              {filteredMenuItems.length === 0 ? (
+                <div className="p-12 text-center text-xs sm:text-sm text-stone-500">
+                  No menu dishes match your current filter.
+                </div>
+              ) : (
+                <>
+                  <div className="hidden md:block overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-stone-50 border-b border-stone-200 text-stone-500 font-semibold">
+                        <tr>
+                          <th className="py-3.5 px-4">Dish</th>
+                          <th className="py-3.5 px-4">Category &amp; Diet</th>
+                          <th className="py-3.5 px-4 text-right">Official Price</th>
+                          <th className="py-3.5 px-4">Visibility &amp; Stock</th>
+                          <th className="py-3.5 px-4 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-stone-100">
+                        {filteredMenuItems.map(item => {
+                          const cat = categories.find(c => c.id === item.categoryId);
+                          const hasImgError = brokenImages[item.id];
+                          return (
+                            <tr key={item.id} className="hover:bg-stone-50/60 transition-colors">
+                              <td className="py-3.5 px-4">
+                                <div className="flex items-center gap-3">
+                                  {item.imageUrl && !hasImgError ? (
+                                    <img
+                                      src={item.imageUrl}
+                                      alt={item.name}
+                                      referrerPolicy="no-referrer"
+                                      onError={() => setBrokenImages(prev => ({ ...prev, [item.id]: true }))}
+                                      className="w-11 h-11 rounded-xl object-cover bg-stone-100 border border-stone-200 shrink-0"
+                                    />
+                                  ) : (
+                                    <div className="w-11 h-11 rounded-xl bg-stone-100 border border-stone-200 flex items-center justify-center text-stone-400 shrink-0">
+                                      <Utensils className="w-4 h-4" />
+                                    </div>
+                                  )}
+                                  <div className="min-w-0">
+                                    <span className="font-bold text-stone-900 block text-sm truncate max-w-xs">
+                                      {item.name}
+                                    </span>
+                                    <span className="text-xs text-stone-500 line-clamp-1 max-w-sm">
+                                      {item.description}
+                                    </span>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <div className="font-semibold text-stone-800">{cat?.name || item.categoryId}</div>
+                                <div className="text-[11px] text-stone-500">
+                                  {DIET_LABELS[item.dietType] || item.dietType} · {item.preparationTimeMinutes} min prep
+                                </div>
+                              </td>
+                              <td className="py-3.5 px-4 text-right font-mono tabular-nums font-bold text-stone-900 text-sm whitespace-nowrap">
+                                Nu. {item.price}
+                              </td>
+                              <td className="py-3.5 px-4">
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => onToggleAvailability(item.id, !item.isAvailable, item.soldOut)}
+                                    className={`min-h-[36px] px-3 py-1 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                                      item.isAvailable
+                                        ? 'bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100/70'
+                                        : 'bg-stone-100 text-stone-600 border-stone-200 hover:bg-stone-200/70'
+                                    }`}
+                                  >
+                                    {item.isAvailable ? 'Menu Active' : 'Hidden'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => onToggleAvailability(item.id, item.isAvailable, !item.soldOut)}
+                                    className={`min-h-[36px] px-3 py-1 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                                      item.soldOut
+                                        ? 'bg-rose-50 text-rose-900 border-rose-200 hover:bg-rose-100/70'
+                                        : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-50'
+                                    }`}
+                                  >
+                                    {item.soldOut ? 'Sold Out' : 'In Stock'}
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="py-3.5 px-4 text-right">
+                                <div className="inline-flex items-center justify-end gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSaveDishError(null);
+                                      setEditingItem({ ...item });
+                                    }}
+                                    className="min-h-[36px] px-2.5 text-stone-700 hover:text-stone-900 rounded-lg hover:bg-stone-100 inline-flex items-center gap-1 font-semibold cursor-pointer"
+                                  >
+                                    <Edit2 className="w-3.5 h-3.5 text-stone-500" />
+                                    <span>Edit</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setPendingDelete({
+                                        kind: 'dish',
+                                        id: item.id,
+                                        label: item.name
+                                      })
+                                    }
+                                    className="min-h-[36px] px-2.5 text-rose-600 hover:text-rose-800 rounded-lg hover:bg-rose-50 inline-flex items-center gap-1 font-semibold cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    <span>Delete</span>
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="md:hidden divide-y divide-stone-200">
                     {filteredMenuItems.map(item => {
                       const cat = categories.find(c => c.id === item.categoryId);
                       return (
-                        <tr key={item.id} className="hover:bg-stone-50/60 transition-colors">
-                          <td className="py-3 px-4">
-                            <div className="flex items-center gap-3">
-                              <img
-                                src={item.imageUrl}
-                                alt={item.name}
-                                className="w-10 h-10 rounded-lg object-cover bg-stone-100"
-                              />
-                              <div>
-                                <span className="font-bold text-stone-900 block">{item.name}</span>
-                                <span className="text-[11px] text-stone-400 line-clamp-1 max-w-xs">{item.description}</span>
-                              </div>
+                        <div key={item.id} className="p-4 space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <h3 className="font-bold text-sm text-stone-900">{item.name}</h3>
+                              <p className="text-xs text-stone-500">
+                                {cat?.name || item.categoryId} · {DIET_LABELS[item.dietType] || item.dietType}
+                              </p>
                             </div>
-                          </td>
-                          <td className="py-3 px-4 font-semibold text-stone-600">
-                            {cat?.name || item.categoryId}
-                          </td>
-                          <td className="py-3 px-4 font-mono font-bold text-stone-900">
-                            Nu. {item.price}
-                          </td>
-                          <td className="py-3 px-4">
+                            <span className="font-mono tabular-nums font-bold text-sm text-stone-900 shrink-0">
+                              Nu. {item.price}
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                             <div className="flex items-center gap-2">
                               <button
+                                type="button"
                                 onClick={() => onToggleAvailability(item.id, !item.isAvailable, item.soldOut)}
-                                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer ${
                                   item.isAvailable
-                                    ? 'bg-emerald-100 text-emerald-800'
-                                    : 'bg-stone-100 text-stone-500'
+                                    ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                                    : 'bg-stone-100 text-stone-600 border-stone-200'
                                 }`}
                               >
                                 {item.isAvailable ? 'Active' : 'Hidden'}
                               </button>
                               <button
+                                type="button"
                                 onClick={() => onToggleAvailability(item.id, item.isAvailable, !item.soldOut)}
-                                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer ${
                                   item.soldOut
-                                    ? 'bg-rose-100 text-rose-800'
-                                    : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
+                                    ? 'bg-rose-50 text-rose-900 border-rose-200'
+                                    : 'bg-white text-stone-700 border-stone-200'
                                 }`}
                               >
-                                {item.soldOut ? 'SOLD OUT' : 'In Stock'}
+                                {item.soldOut ? 'Sold Out' : 'In Stock'}
                               </button>
                             </div>
-                          </td>
-                          <td className="py-3 px-4">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                              item.dietType === 'veg'
-                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                : 'bg-stone-100 text-stone-700'
-                            }`}>
-                              {item.dietType}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-right">
-                            <div className="flex items-center justify-end gap-1.5">
+
+                            <div className="flex items-center gap-1">
                               <button
+                                type="button"
                                 onClick={() => {
                                   setSaveDishError(null);
                                   setEditingItem({ ...item });
                                 }}
-                                className="p-1.5 text-stone-500 hover:text-stone-900 rounded-lg hover:bg-stone-100"
-                                title="Edit Dish & Price"
+                                className="min-h-[38px] px-3 text-xs font-semibold text-stone-700 hover:bg-stone-100 rounded-lg cursor-pointer"
                               >
-                                <Edit2 className="w-3.5 h-3.5" />
+                                Edit
                               </button>
                               <button
-                                onClick={() => onDeleteMenuItem(item.id)}
-                                className="p-1.5 text-stone-400 hover:text-rose-600 rounded-lg hover:bg-rose-50"
-                                title="Delete Dish"
+                                type="button"
+                                onClick={() =>
+                                  setPendingDelete({
+                                    kind: 'dish',
+                                    id: item.id,
+                                    label: item.name
+                                  })
+                                }
+                                className="min-h-[38px] px-3 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                Delete
                               </button>
                             </div>
-                          </td>
-                        </tr>
+                          </div>
+                        </div>
                       );
                     })}
-                  </tbody>
-                </table>
-              </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
 
-        {/* TAB 3: STAFF ACCOUNTS & ROLES */}
-        {activeTab === 'staff' && (
+        {/* TAB 3: STAFF ACCOUNTS & ROLES (Admin Only) */}
+        {isAdmin && activeTab === 'staff' && (
           <div className="space-y-5">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div>
-                <h3 className="text-sm font-bold text-stone-900 uppercase tracking-wider">
-                  Staff Role-Based Accounts
-                </h3>
+            <div className="bg-white rounded-2xl border border-stone-200 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-0.5">
+                <h2 className="text-base font-bold text-stone-900 font-display">Staff &amp; Management Accounts</h2>
                 <p className="text-xs text-stone-500">
-                  Manage login accounts and assign user roles: Customer, Kitchen Cook, Counter Staff, and Administrator.
+                  Assign station permissions across Admin, General Manager, Counter Staff, and Kitchen Cook roles.
                 </p>
               </div>
 
               <button
+                type="button"
                 onClick={() => {
                   setStaffError(null);
                   setEditingStaff({
@@ -616,81 +790,88 @@ export const AdminHub: React.FC<AdminHubProps> = ({
                     active: true
                   });
                 }}
-                className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold rounded-xl flex items-center gap-2 shadow-xs transition-colors self-start sm:self-auto"
+                className="min-h-[42px] px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold rounded-xl flex items-center gap-2 transition-colors self-start sm:self-auto cursor-pointer"
               >
-                <Plus className="w-3.5 h-3.5" />
+                <Plus className="w-4 h-4" />
                 <span>Create Staff Account</span>
               </button>
             </div>
 
-            {/* Staff list */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
               {staffUsers.map((st) => (
-                <div
+                <article
                   key={st.id}
-                  className="bg-white rounded-2xl border border-stone-200/80 p-5 shadow-xs space-y-3 flex flex-col justify-between"
+                  className="bg-white rounded-2xl border border-stone-200 p-5 flex flex-col justify-between space-y-4"
                 >
-                  <div className="space-y-2">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-9 h-9 rounded-xl bg-stone-100 flex items-center justify-center text-stone-700">
-                          {st.role === 'kitchen' && <ChefHat className="w-5 h-5 text-amber-600" />}
-                          {st.role === 'cashier' && <CreditCard className="w-5 h-5 text-blue-600" />}
-                          {(st.role === 'admin' || st.role === 'manager') && <Shield className="w-5 h-5 text-purple-600" />}
+                  <div className="space-y-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-stone-100 border border-stone-200 flex items-center justify-center text-stone-700 shrink-0">
+                          {st.role === 'kitchen' && <ChefHat className="w-4 h-4 text-teal-800" />}
+                          {st.role === 'cashier' && <CreditCard className="w-4 h-4 text-teal-800" />}
+                          {(st.role === 'admin' || st.role === 'manager') && <Shield className="w-4 h-4 text-teal-800" />}
                         </div>
                         <div>
-                          <h4 className="text-xs font-bold text-stone-900">{st.name}</h4>
-                          <span className="text-[11px] text-stone-500 font-mono">@{st.username}</span>
+                          <h3 className="text-sm font-bold text-stone-900">{st.name}</h3>
+                          <span className="text-xs text-stone-500 font-mono">@{st.username}</span>
                         </div>
                       </div>
-                      {getRoleBadge(st.role)}
+                      {getRoleLabel(st.role)}
                     </div>
 
-                    <div className="p-3 bg-stone-50 rounded-xl space-y-1 text-xs">
-                      <div className="flex justify-between text-stone-600">
-                        <span>Station Access:</span>
-                        <strong className="text-stone-900">
-                          {st.role === 'kitchen' && 'Kitchen Display (KDS)'}
+                    <dl className="divide-y divide-stone-100 border-t border-b border-stone-100 text-xs">
+                      <div className="py-2 flex justify-between gap-2">
+                        <dt className="text-stone-500">Workspace</dt>
+                        <dd className="font-semibold text-stone-900 text-right">
+                          {st.role === 'kitchen' && 'Chef Dashboard (KDS)'}
                           {st.role === 'cashier' && 'Counter Billing & POS'}
-                          {st.role === 'admin' && 'Full Administrator'}
-                          {st.role === 'manager' && 'Floor & Reports'}
-                        </strong>
+                          {st.role === 'admin' && 'Full System Admin'}
+                          {st.role === 'manager' && 'Order History & Reports'}
+                        </dd>
                       </div>
-                      <div className="flex justify-between text-stone-600">
-                        <span>Terminal PIN:</span>
-                        <span className="font-mono font-bold text-stone-800">{st.pin || '••••'}</span>
+                      <div className="py-2 flex justify-between gap-2">
+                        <dt className="text-stone-500">Terminal PIN</dt>
+                        <dd className="font-mono font-semibold text-stone-700">•••• (Protected)</dd>
                       </div>
-                      <div className="flex justify-between text-stone-600">
-                        <span>Account Status:</span>
-                        <span className={`font-semibold ${st.active ? 'text-emerald-700' : 'text-rose-600'}`}>
+                      <div className="py-2 flex justify-between gap-2">
+                        <dt className="text-stone-500">Status</dt>
+                        <dd className={`font-semibold ${st.active ? 'text-emerald-700' : 'text-rose-700'}`}>
                           {st.active ? 'Active' : 'Deactivated'}
-                        </span>
+                        </dd>
                       </div>
-                    </div>
+                    </dl>
                   </div>
 
-                  <div className="pt-2 border-t border-stone-100 flex items-center justify-end gap-2">
+                  <div className="flex items-center justify-end gap-2">
                     <button
+                      type="button"
                       onClick={() => {
                         setStaffError(null);
-                        setEditingStaff({ ...st });
+                        setEditingStaff({ ...st, pin: '' });
                       }}
-                      className="px-2.5 py-1 text-xs font-semibold text-stone-700 hover:bg-stone-100 rounded-lg flex items-center gap-1"
+                      className="min-h-[38px] px-3 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-100 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
                     >
-                      <Edit2 className="w-3 h-3 text-stone-500" />
+                      <Edit2 className="w-3.5 h-3.5 text-stone-500" />
                       <span>Edit</span>
                     </button>
                     {st.username !== 'admin' && (
                       <button
-                        onClick={() => handleDeleteStaff(st.id)}
-                        className="px-2.5 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg flex items-center gap-1"
+                        type="button"
+                        onClick={() =>
+                          setPendingDelete({
+                            kind: 'staff',
+                            id: st.id,
+                            label: `${st.name} (@${st.username})`
+                          })
+                        }
+                        className="min-h-[38px] px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg inline-flex items-center gap-1.5 cursor-pointer"
                       >
-                        <Trash2 className="w-3 h-3" />
+                        <Trash2 className="w-3.5 h-3.5" />
                         <span>Delete</span>
                       </button>
                     )}
                   </div>
-                </div>
+                </article>
               ))}
             </div>
           </div>
@@ -699,6 +880,8 @@ export const AdminHub: React.FC<AdminHubProps> = ({
         {/* TAB 4: TABLES & QR CARDS */}
         {activeTab === 'tables' && (
           <TableQRManagement
+            embedded={true}
+            currentUser={currentUser}
             onSelectTableForCustomerView={(tableId, token) => onSelectTableForCustomerView?.(tableId, token)}
             onRefreshData={onRefreshData}
           />
@@ -706,44 +889,48 @@ export const AdminHub: React.FC<AdminHubProps> = ({
 
         {/* TAB 5: PRICE AUDITS */}
         {activeTab === 'price_audits' && (
-          <div className="bg-white rounded-2xl border border-stone-200/80 p-5 shadow-xs space-y-4">
-            <div>
-              <h3 className="text-sm font-bold text-stone-900 uppercase tracking-wider">
-                Price Modification Audit Trail
-              </h3>
+          <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden">
+            <div className="p-5 sm:p-6 border-b border-stone-200 space-y-1">
+              <h2 className="text-base font-bold text-stone-900 font-display">Price Modification Audit Trail</h2>
               <p className="text-xs text-stone-500">
-                Every dish price change is permanently recorded with staff identity, old price, new price, and justification.
+                Every official menu price change is logged with staff identity, previous price, new price, and timestamp.
               </p>
             </div>
 
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-stone-50 border-b border-stone-200 text-stone-500 uppercase font-bold text-[11px]">
+                <thead className="bg-stone-50 border-b border-stone-200 text-stone-500 font-semibold">
                   <tr>
-                    <th className="py-2.5 px-3">Timestamp</th>
-                    <th className="py-2.5 px-3">Dish</th>
-                    <th className="py-2.5 px-3">Previous Price</th>
-                    <th className="py-2.5 px-3">New Price</th>
-                    <th className="py-2.5 px-3">Changed By</th>
-                    <th className="py-2.5 px-3">Reason</th>
+                    <th className="py-3 px-4">Timestamp</th>
+                    <th className="py-3 px-4">Dish</th>
+                    <th className="py-3 px-4 text-right">Previous Price</th>
+                    <th className="py-3 px-4 text-right">New Price</th>
+                    <th className="py-3 px-4">Changed By</th>
+                    <th className="py-3 px-4">Reason</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-stone-100 font-mono">
+                <tbody className="divide-y divide-stone-100">
                   {auditLogs.priceLogs.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="py-6 text-center text-stone-400 font-sans">
-                        No price modifications recorded yet.
+                      <td colSpan={6} className="py-10 text-center text-stone-500">
+                        No dish price modifications recorded yet.
                       </td>
                     </tr>
                   ) : (
                     auditLogs.priceLogs.map((log: any) => (
-                      <tr key={log.id}>
-                        <td className="py-2 px-3 text-stone-500">{new Date(log.timestamp).toLocaleString()}</td>
-                        <td className="py-2 px-3 font-bold font-sans text-stone-900">{log.menuItemName}</td>
-                        <td className="py-2 px-3 text-stone-400">Nu. {log.previousPrice}</td>
-                        <td className="py-2 px-3 font-bold text-emerald-700">Nu. {log.newPrice}</td>
-                        <td className="py-2 px-3 font-sans text-stone-700">{log.changedBy}</td>
-                        <td className="py-2 px-3 font-sans text-stone-500">{log.reason}</td>
+                      <tr key={log.id} className="hover:bg-stone-50/60">
+                        <td className="py-3 px-4 text-stone-500 font-mono tabular-nums whitespace-nowrap">
+                          {new Date(log.timestamp).toLocaleString()}
+                        </td>
+                        <td className="py-3 px-4 font-semibold text-stone-900">{log.menuItemName}</td>
+                        <td className="py-3 px-4 text-right font-mono tabular-nums text-stone-500">
+                          Nu. {log.previousPrice}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono tabular-nums font-bold text-emerald-700">
+                          Nu. {log.newPrice}
+                        </td>
+                        <td className="py-3 px-4 text-stone-700">{log.changedBy}</td>
+                        <td className="py-3 px-4 text-stone-500">{log.reason}</td>
                       </tr>
                     ))
                   )}
@@ -755,156 +942,217 @@ export const AdminHub: React.FC<AdminHubProps> = ({
 
         {/* TAB 6: SYSTEM LOGS */}
         {activeTab === 'system_logs' && (
-          <div className="bg-white rounded-2xl border border-stone-200/80 p-5 shadow-xs space-y-4">
-            <div>
-              <h3 className="text-sm font-bold text-stone-900 uppercase tracking-wider">
-                System Security & Operational Audit Log
-              </h3>
+          <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden">
+            <div className="p-5 sm:p-6 border-b border-stone-200 space-y-1">
+              <h2 className="text-base font-bold text-stone-900 font-display">Operational &amp; Security Audit Log</h2>
               <p className="text-xs text-stone-500">
-                Log of order creations, kitchen acknowledges, payment settlements, and policy updates.
+                Chronological record of order placements, kitchen updates, payment settlements, and configuration changes.
               </p>
             </div>
 
-            <div className="space-y-2 max-h-96 overflow-y-auto divide-y divide-stone-100 text-xs">
+            <div className="max-h-[480px] overflow-y-auto divide-y divide-stone-100 text-xs">
               {auditLogs.generalLogs.length === 0 ? (
-                <div className="text-stone-400 py-4 text-center">No system logs recorded yet.</div>
+                <div className="text-stone-500 py-10 text-center">No operational logs recorded yet.</div>
               ) : (
-                auditLogs.generalLogs.slice().reverse().map((log: any) => (
-                  <div key={log.id} className="pt-2 flex items-start justify-between gap-4 font-mono">
-                    <div>
-                      <span className="font-bold text-stone-800 mr-2">[{log.action}]</span>
-                      <span className="text-stone-600 font-sans">{log.details}</span>
+                auditLogs.generalLogs
+                  .slice()
+                  .reverse()
+                  .map((log: any) => (
+                    <div key={log.id} className="px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-stone-50/60">
+                      <div className="space-y-0.5">
+                        <span className="font-mono font-bold text-teal-900 mr-2">[{log.action}]</span>
+                        <span className="text-stone-700">{log.details}</span>
+                      </div>
+                      <div className="text-stone-500 font-mono tabular-nums text-[11px] shrink-0">
+                        {log.performedBy || log.staffName || 'System'} · {new Date(log.timestamp).toLocaleTimeString()}
+                      </div>
                     </div>
-                    <div className="text-right shrink-0 text-stone-400 text-[11px]">
-                      <span>{log.staffName} · {new Date(log.timestamp).toLocaleTimeString()}</span>
-                    </div>
-                  </div>
-                ))
+                  ))
               )}
             </div>
           </div>
         )}
 
-        {/* TAB 7: SETTINGS & MENU PRICE POLICY */}
-        {activeTab === 'settings' && (
-          <div className="bg-white rounded-2xl border border-stone-200/80 p-6 shadow-xs space-y-6 max-w-2xl">
-            <div>
-              <h3 className="text-sm font-bold text-stone-900 uppercase tracking-wider">
-                Cafe Policies & System Settings
-              </h3>
+        {/* TAB 7: SETTINGS & POLICIES (Admin Only) */}
+        {isAdmin && activeTab === 'settings' && (
+          <div className="bg-white rounded-2xl border border-stone-200 p-6 sm:p-8 space-y-6 max-w-2xl">
+            <div className="space-y-1 border-b border-stone-100 pb-4">
+              <h2 className="text-lg font-bold text-stone-900 font-display">Café Policies &amp; System Settings</h2>
               <p className="text-xs text-stone-500">
-                Configure taxes, service charges, and customer-facing menu price visibility.
+                Configure guest ordering availability, menu price visibility, kitchen audio chimes, and tax rates.
               </p>
             </div>
 
             {settingsSaved && (
-              <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-xl flex items-center gap-2">
-                <CheckCircle className="w-4 h-4" />
-                <span>Settings successfully saved and broadcast across all stations!</span>
+              <div role="status" className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs rounded-xl flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>Settings saved and synchronized across all stations.</span>
               </div>
             )}
 
             <div className="space-y-4 text-xs">
-              {/* Show prices on customer menu toggle */}
-              <div className="p-4 bg-stone-50 rounded-xl border border-stone-200 flex items-start justify-between gap-4">
+              <label
+                htmlFor="setting-allow-guest-ordering"
+                className="p-4 bg-stone-50 rounded-xl border border-stone-200 flex items-start justify-between gap-4 cursor-pointer"
+              >
                 <div>
-                  <div className="font-bold text-stone-900 text-sm">
-                    Show Prices on Customer Menu
-                  </div>
+                  <div className="font-bold text-stone-900 text-sm">Enable Anonymous Guest Self-Ordering</div>
                   <p className="text-stone-500 text-xs mt-0.5 leading-relaxed">
-                    When disabled (default), dishes and customizations do not mention prices to guests on their phones. High Quality Cafe prepares dishes to order and prepares the bill at the cashier counter.
+                    Allows guests to submit anonymous pickup and table QR orders from their phones. Pause during maintenance or private events.
                   </p>
-                  <span className={`inline-block mt-2 px-2 py-0.5 rounded text-[11px] font-semibold ${
-                    settingForm.showPricesOnCustomerMenu
-                      ? 'bg-amber-100 text-amber-800 border border-amber-300'
-                      : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                  }`}>
-                    {settingForm.showPricesOnCustomerMenu ? 'Prices Visible to Guests' : 'Prices Hidden (Requested Policy)'}
+                </div>
+                <input
+                  id="setting-allow-guest-ordering"
+                  type="checkbox"
+                  checked={settingForm.allowGuestOrdering !== false}
+                  onChange={(e) => setSettingForm(prev => ({ ...prev, allowGuestOrdering: e.target.checked }))}
+                  className="w-5 h-5 accent-teal-700 rounded cursor-pointer mt-0.5 shrink-0"
+                />
+              </label>
+
+              <label
+                htmlFor="setting-show-prices"
+                className="p-4 bg-stone-50 rounded-xl border border-stone-200 flex items-start justify-between gap-4 cursor-pointer"
+              >
+                <div>
+                  <div className="font-bold text-stone-900 text-sm">Show Prices on Customer Menu</div>
+                  <p className="text-stone-500 text-xs mt-0.5 leading-relaxed">
+                    When disabled, guest menus hide prices and present itemized bills at the cashier counter.
+                  </p>
+                  <span
+                    className={`inline-block mt-2 px-2.5 py-0.5 rounded-md text-[11px] font-semibold border ${
+                      settingForm.showPricesOnCustomerMenu
+                        ? 'bg-amber-50 text-amber-900 border-amber-200'
+                        : 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                    }`}
+                  >
+                    {settingForm.showPricesOnCustomerMenu ? 'Prices Visible to Guests' : 'Prices Hidden on Guest Menu'}
                   </span>
                 </div>
                 <input
+                  id="setting-show-prices"
                   type="checkbox"
                   checked={!!settingForm.showPricesOnCustomerMenu}
                   onChange={(e) => setSettingForm(prev => ({ ...prev, showPricesOnCustomerMenu: e.target.checked }))}
-                  className="w-5 h-5 accent-amber-600 rounded cursor-pointer mt-1"
+                  className="w-5 h-5 accent-teal-700 rounded cursor-pointer mt-0.5 shrink-0"
                 />
-              </div>
+              </label>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <label
+                htmlFor="setting-kitchen-chime"
+                className="p-4 bg-stone-50 rounded-xl border border-stone-200 flex items-start justify-between gap-4 cursor-pointer"
+              >
                 <div>
-                  <label className="font-bold text-stone-700 block mb-1">Restaurant Name</label>
+                  <div className="font-bold text-stone-900 text-sm">Default Kitchen Audio Chime Alert</div>
+                  <p className="text-stone-500 text-xs mt-0.5 leading-relaxed">
+                    Play an audible notification chime on staff terminals whenever a new order arrives.
+                  </p>
+                </div>
+                <input
+                  id="setting-kitchen-chime"
+                  type="checkbox"
+                  checked={!!settingForm.kitchenAudioAlert}
+                  onChange={(e) => setSettingForm(prev => ({ ...prev, kitchenAudioAlert: e.target.checked }))}
+                  className="w-5 h-5 accent-teal-700 rounded cursor-pointer mt-0.5 shrink-0"
+                />
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                <div className="space-y-1.5">
+                  <label htmlFor="setting-restaurant-name" className="font-semibold text-stone-700 block">Restaurant Name</label>
                   <input
+                    id="setting-restaurant-name"
                     type="text"
                     value={settingForm.restaurantName}
                     onChange={(e) => setSettingForm(prev => ({ ...prev, restaurantName: e.target.value }))}
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">Operating Hours</label>
+                <div className="space-y-1.5">
+                  <label htmlFor="setting-operating-hours" className="font-semibold text-stone-700 block">Operating Hours</label>
                   <input
+                    id="setting-operating-hours"
                     type="text"
                     value={settingForm.operatingHours}
                     onChange={(e) => setSettingForm(prev => ({ ...prev, operatingHours: e.target.value }))}
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">Bhutan Sales Tax Rate (0.05 = 5%)</label>
+                <div className="space-y-1.5">
+                  <label htmlFor="setting-tax-rate" className="font-semibold text-stone-700 block">
+                    Bhutan Sales Tax Rate (0.05 = 5%)
+                  </label>
                   <input
+                    id="setting-tax-rate"
                     type="number"
+                    min="0"
+                    max="1"
                     step="0.01"
                     value={settingForm.taxRate}
                     onChange={(e) => setSettingForm(prev => ({ ...prev, taxRate: parseFloat(e.target.value) || 0 }))}
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg font-mono"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl font-mono tabular-nums focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">Service Charge Rate (0.10 = 10%)</label>
+                <div className="space-y-1.5">
+                  <label htmlFor="setting-service-rate" className="font-semibold text-stone-700 block">
+                    Service Charge Rate (0.10 = 10%)
+                  </label>
                   <input
+                    id="setting-service-rate"
                     type="number"
+                    min="0"
+                    max="1"
                     step="0.01"
                     value={settingForm.serviceChargeRate}
                     onChange={(e) => setSettingForm(prev => ({ ...prev, serviceChargeRate: parseFloat(e.target.value) || 0 }))}
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg font-mono"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl font-mono tabular-nums focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
               </div>
 
-              <div>
-                <label className="font-bold text-stone-700 block mb-1">Address</label>
+              <div className="space-y-1.5">
+                <label htmlFor="setting-address" className="font-semibold text-stone-700 block">Street Address</label>
                 <input
+                  id="setting-address"
                   type="text"
                   value={settingForm.address}
                   onChange={(e) => setSettingForm(prev => ({ ...prev, address: e.target.value }))}
-                  className="w-full px-3 py-2 border border-stone-200 rounded-lg"
+                  className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                 />
               </div>
 
-              <div>
-                <label className="font-bold text-stone-700 block mb-1">Phone</label>
+              <div className="space-y-1.5">
+                <label htmlFor="setting-phone" className="font-semibold text-stone-700 block">Contact Telephone</label>
                 <input
+                  id="setting-phone"
                   type="text"
                   value={settingForm.phone}
                   onChange={(e) => setSettingForm(prev => ({ ...prev, phone: e.target.value }))}
-                  className="w-full px-3 py-2 border border-stone-200 rounded-lg"
+                  className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl font-mono focus:bg-white focus:outline-none focus:border-teal-700"
                 />
               </div>
 
-              <div className="pt-3 flex justify-end">
+              <div className="pt-4 border-t border-stone-100 flex justify-end">
                 <button
                   type="button"
                   onClick={async () => {
-                    if (onUpdateSettings) {
+                    if (!onUpdateSettings) return;
+                    try {
+                      setHubNotice(null);
                       await onUpdateSettings(settingForm);
                       setSettingsSaved(true);
                       setTimeout(() => setSettingsSaved(false), 3000);
+                    } catch (err: any) {
+                      setHubNotice({
+                        type: 'error',
+                        message: err.message || 'Failed to save system settings'
+                      });
                     }
                   }}
-                  className="px-5 py-2.5 bg-stone-900 hover:bg-stone-800 text-white font-bold rounded-xl shadow-xs transition-colors"
+                  className="min-h-[46px] px-6 py-2.5 bg-teal-700 hover:bg-teal-800 text-white text-xs sm:text-sm font-bold rounded-xl transition-colors cursor-pointer"
                 >
                   Save Policy Settings
                 </button>
@@ -914,48 +1162,57 @@ export const AdminHub: React.FC<AdminHubProps> = ({
         )}
       </div>
 
-      {/* Dish Add/Edit Drawer Modal */}
+      {/* Dish Add/Edit Modal */}
       {editingItem && (
-        <div className="fixed inset-0 z-50 bg-stone-950/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-stone-200 space-y-4 my-8">
+        <div className="fixed inset-0 z-50 bg-stone-950/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dish-modal-title"
+            className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl border border-stone-200 space-y-4 my-8"
+          >
             <div className="flex items-center justify-between border-b border-stone-100 pb-3">
-              <h3 className="text-base font-bold text-stone-900 font-display">
-                {editingItem.id && menuItems.some(m => m.id === editingItem.id) ? 'Edit Dish' : 'Create New Dish'}
+              <h3 id="dish-modal-title" className="text-base font-bold text-stone-900 font-display">
+                {editingItem.id && menuItems.some(m => m.id === editingItem.id) ? 'Edit Menu Dish' : 'Add New Menu Dish'}
               </h3>
               <button
+                type="button"
+                aria-label="Close dish dialog"
                 onClick={() => setEditingItem(null)}
-                className="w-7 h-7 rounded-lg hover:bg-stone-100 flex items-center justify-center text-stone-500"
+                className="w-9 h-9 rounded-lg hover:bg-stone-100 flex items-center justify-center text-stone-500 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             {saveDishError && (
-              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
+              <div role="alert" className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
                 <span>{saveDishError}</span>
               </div>
             )}
 
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="font-bold text-stone-700 block mb-1">Dish Name</label>
+            <div className="space-y-3.5 text-xs">
+              <div className="space-y-1">
+                <label htmlFor="dish-name-input" className="font-semibold text-stone-700 block">Dish Name</label>
                 <input
+                  id="dish-name-input"
                   type="text"
                   value={editingItem.name || ''}
                   onChange={(e) => setEditingItem(prev => ({ ...prev, name: e.target.value }))}
                   placeholder="e.g. Bhutanese Kewa Datshi"
-                  className="w-full px-3 py-2 border border-stone-200 rounded-lg"
+                  className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">Category</label>
+                <div className="space-y-1">
+                  <label htmlFor="dish-cat-select" className="font-semibold text-stone-700 block">Category</label>
                   <select
+                    id="dish-cat-select"
                     value={editingItem.categoryId}
                     onChange={(e) => setEditingItem(prev => ({ ...prev, categoryId: e.target.value }))}
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg bg-white"
+                    className="w-full min-h-[44px] px-3 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                   >
                     {categories.map(c => (
                       <option key={c.id} value={c.id}>{c.name}</option>
@@ -963,75 +1220,81 @@ export const AdminHub: React.FC<AdminHubProps> = ({
                   </select>
                 </div>
 
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">Official Price (Nu.)</label>
+                <div className="space-y-1">
+                  <label htmlFor="dish-price-input" className="font-semibold text-stone-700 block">Official Price (Nu.)</label>
                   <input
+                    id="dish-price-input"
                     type="number"
                     value={editingItem.price || 0}
                     onChange={(e) => setEditingItem(prev => ({ ...prev, price: Number(e.target.value) }))}
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg font-mono font-bold"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl font-mono tabular-nums font-bold focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
               </div>
 
-              <div>
-                <label className="font-bold text-stone-700 block mb-1">Description</label>
+              <div className="space-y-1">
+                <label htmlFor="dish-desc-input" className="font-semibold text-stone-700 block">Description</label>
                 <textarea
+                  id="dish-desc-input"
                   value={editingItem.description || ''}
                   onChange={(e) => setEditingItem(prev => ({ ...prev, description: e.target.value }))}
                   rows={2}
-                  className="w-full px-3 py-2 border border-stone-200 rounded-lg"
+                  className="w-full px-3.5 py-2.5 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">Diet Type</label>
+                <div className="space-y-1">
+                  <label htmlFor="dish-diet-select" className="font-semibold text-stone-700 block">Dietary Classification</label>
                   <select
+                    id="dish-diet-select"
                     value={editingItem.dietType}
                     onChange={(e) => setEditingItem(prev => ({ ...prev, dietType: e.target.value as DietType }))}
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg bg-white"
+                    className="w-full min-h-[44px] px-3 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                   >
                     <option value="veg">Vegetarian</option>
                     <option value="non-veg">Non-Vegetarian</option>
                     <option value="vegan">Vegan</option>
+                    <option value="egg">Contains Egg</option>
                   </select>
                 </div>
 
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">Prep Time (Mins)</label>
+                <div className="space-y-1">
+                  <label htmlFor="dish-prep-input" className="font-semibold text-stone-700 block">Prep Time (Minutes)</label>
                   <input
+                    id="dish-prep-input"
                     type="number"
                     value={editingItem.preparationTimeMinutes || 10}
                     onChange={(e) => setEditingItem(prev => ({ ...prev, preparationTimeMinutes: Number(e.target.value) }))}
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg font-mono"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl font-mono tabular-nums focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
               </div>
 
-              <div>
-                <label className="font-bold text-stone-700 block mb-1">Photo Image URL</label>
+              <div className="space-y-1">
+                <label htmlFor="dish-image-input" className="font-semibold text-stone-700 block">Photo URL</label>
                 <input
+                  id="dish-image-input"
                   type="text"
                   value={editingItem.imageUrl || ''}
                   onChange={(e) => setEditingItem(prev => ({ ...prev, imageUrl: e.target.value }))}
-                  className="w-full px-3 py-2 border border-stone-200 rounded-lg font-mono text-[11px]"
+                  className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl font-mono text-[11px] focus:bg-white focus:outline-none focus:border-teal-700"
                 />
               </div>
             </div>
 
-            <div className="pt-3 border-t border-stone-100 flex justify-end gap-2">
+            <div className="pt-3 border-t border-stone-100 flex justify-end gap-2.5">
               <button
                 type="button"
                 onClick={() => setEditingItem(null)}
-                className="px-3 py-2 text-xs text-stone-500"
+                className="min-h-[44px] px-4 py-2 text-xs font-semibold text-stone-600 hover:text-stone-900 rounded-xl hover:bg-stone-100 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleSaveDish}
-                className="px-4 py-2 text-xs font-bold bg-stone-900 text-white rounded-lg"
+                className="min-h-[44px] px-5 py-2 text-xs font-bold bg-teal-700 hover:bg-teal-800 text-white rounded-xl transition-colors cursor-pointer"
               >
                 Save Dish Changes
               </button>
@@ -1042,107 +1305,123 @@ export const AdminHub: React.FC<AdminHubProps> = ({
 
       {/* Staff Account Modal */}
       {editingStaff && (
-        <div className="fixed inset-0 z-50 bg-stone-950/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-stone-200 space-y-4">
+        <div className="fixed inset-0 z-50 bg-stone-950/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="staff-modal-title"
+            className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-stone-200 space-y-4"
+          >
             <div className="flex items-center justify-between border-b border-stone-100 pb-3">
-              <h3 className="text-base font-bold text-stone-900 font-display">
-                {editingStaff.id ? 'Edit Staff Account' : 'Create New Staff Member'}
+              <h3 id="staff-modal-title" className="text-base font-bold text-stone-900 font-display">
+                {editingStaff.id ? 'Edit Staff Account' : 'Create Staff Account'}
               </h3>
               <button
+                type="button"
+                aria-label="Close staff dialog"
                 onClick={() => setEditingStaff(null)}
-                className="w-7 h-7 rounded-lg hover:bg-stone-100 flex items-center justify-center text-stone-500"
+                className="w-9 h-9 rounded-lg hover:bg-stone-100 flex items-center justify-center text-stone-500 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             {staffError && (
-              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
+              <div role="alert" className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
                 <span>{staffError}</span>
               </div>
             )}
 
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="font-bold text-stone-700 block mb-1">Full Name</label>
+            <div className="space-y-3.5 text-xs">
+              <div className="space-y-1">
+                <label htmlFor="staff-fullname-input" className="font-semibold text-stone-700 block">Full Name</label>
                 <input
+                  id="staff-fullname-input"
                   type="text"
                   value={editingStaff.name || ''}
                   onChange={(e) => setEditingStaff(prev => ({ ...prev, name: e.target.value }))}
                   placeholder="e.g. Tshering Penjor"
-                  className="w-full px-3 py-2 border border-stone-200 rounded-lg"
+                  className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">Username</label>
+                <div className="space-y-1">
+                  <label htmlFor="staff-username-input" className="font-semibold text-stone-700 block">Username</label>
                   <input
+                    id="staff-username-input"
                     type="text"
                     value={editingStaff.username || ''}
                     onChange={(e) => setEditingStaff(prev => ({ ...prev, username: e.target.value }))}
                     placeholder="e.g. tshering"
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg font-mono"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl font-mono focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
 
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">PIN Code (4 digits)</label>
+                <div className="space-y-1">
+                  <label htmlFor="staff-pin-input" className="font-semibold text-stone-700 block">
+                    {editingStaff.id ? 'New PIN (Optional)' : 'PIN Code (4–8 chars)'}
+                  </label>
                   <input
-                    type="text"
-                    maxLength={6}
+                    id="staff-pin-input"
+                    type="password"
+                    autoComplete="new-password"
+                    maxLength={8}
                     value={editingStaff.pin || ''}
                     onChange={(e) => setEditingStaff(prev => ({ ...prev, pin: e.target.value }))}
-                    placeholder="e.g. 5678"
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg font-mono text-center"
+                    placeholder={editingStaff.id ? 'Keep current' : 'e.g. 5678'}
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl font-mono text-center focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
               </div>
 
-              <div>
-                <label className="font-bold text-stone-700 block mb-1">Assigned Role</label>
+              <div className="space-y-1">
+                <label htmlFor="staff-role-select" className="font-semibold text-stone-700 block">Assigned Role</label>
                 <select
+                  id="staff-role-select"
                   value={editingStaff.role || 'kitchen'}
+                  disabled={editingStaff.username === 'admin'}
                   onChange={(e) => setEditingStaff(prev => ({ ...prev, role: e.target.value as Role }))}
-                  className="w-full px-3 py-2 border border-stone-200 rounded-lg bg-white"
+                  className="w-full min-h-[44px] px-3 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700 disabled:bg-stone-100 disabled:text-stone-500"
                 >
-                  <option value="kitchen">Kitchen Cook (Kitchen Display Only)</option>
-                  <option value="cashier">Counter Staff (Billing & Payments Only)</option>
-                  <option value="admin">Administrator (Full System Management)</option>
-                  <option value="manager">Floor Manager (Operations & Reports)</option>
+                  <option value="kitchen">Kitchen Cook (Active Kitchen Queue Only)</option>
+                  <option value="cashier">Counter Staff (Active Billing Only)</option>
+                  <option value="manager">GM · General Manager (Order History &amp; Reports)</option>
+                  <option value="admin">Admin (Full System, Users &amp; Settings)</option>
                 </select>
-                <p className="text-[11px] text-stone-400 mt-1">
-                  Enforces strict access control: users cannot access interfaces outside their role.
+                <p className="text-[11px] text-stone-500 pt-0.5">
+                  Only GM and Admin roles can access the complete order history.
                 </p>
               </div>
 
-              <div className="pt-2 flex items-center gap-2">
+              <div className="pt-1 flex items-center gap-2.5">
                 <input
                   type="checkbox"
                   id="staffActiveCheck"
+                  disabled={editingStaff.username === 'admin'}
                   checked={editingStaff.active !== false}
                   onChange={(e) => setEditingStaff(prev => ({ ...prev, active: e.target.checked }))}
-                  className="w-4 h-4 accent-amber-600 rounded"
+                  className="w-4 h-4 accent-teal-700 rounded disabled:opacity-50"
                 />
                 <label htmlFor="staffActiveCheck" className="text-stone-700 font-semibold cursor-pointer">
-                  Account is Active & Permitted to Login
+                  Account is active and permitted to sign in
                 </label>
               </div>
             </div>
 
-            <div className="pt-3 border-t border-stone-100 flex justify-end gap-2">
+            <div className="pt-3 border-t border-stone-100 flex justify-end gap-2.5">
               <button
                 type="button"
                 onClick={() => setEditingStaff(null)}
-                className="px-3 py-2 text-xs text-stone-500"
+                className="min-h-[44px] px-4 py-2 text-xs font-semibold text-stone-600 hover:text-stone-900 rounded-xl hover:bg-stone-100 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleSaveStaff}
-                className="px-4 py-2 text-xs font-bold bg-stone-900 text-white rounded-lg"
+                className="min-h-[44px] px-5 py-2 text-xs font-bold bg-teal-700 hover:bg-teal-800 text-white rounded-xl transition-colors cursor-pointer"
               >
                 Save Staff Account
               </button>
@@ -1153,89 +1432,125 @@ export const AdminHub: React.FC<AdminHubProps> = ({
 
       {/* Table Modal */}
       {editingTable && (
-        <div className="fixed inset-0 z-50 bg-stone-950/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-stone-200 space-y-4">
+        <div className="fixed inset-0 z-50 bg-stone-950/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-stone-200 space-y-4">
             <div className="flex items-center justify-between border-b border-stone-100 pb-3">
               <h3 className="text-base font-bold text-stone-900 font-display">
                 {editingTable.id && tablesWithQR.some(t => t.id === editingTable.id) ? 'Edit Dining Table' : 'Add Dining Table'}
               </h3>
               <button
+                type="button"
+                aria-label="Close table dialog"
                 onClick={() => setEditingTable(null)}
-                className="w-7 h-7 rounded-lg hover:bg-stone-100 flex items-center justify-center text-stone-500"
+                className="w-9 h-9 rounded-lg hover:bg-stone-100 flex items-center justify-center text-stone-500 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             {tableError && (
-              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
+              <div role="alert" className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
                 <span>{tableError}</span>
               </div>
             )}
 
-            <div className="space-y-3 text-xs">
+            <div className="space-y-3.5 text-xs">
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">Table ID / Code</label>
+                <div className="space-y-1">
+                  <label htmlFor="admin-table-id" className="font-semibold text-stone-700 block">Table ID / Code</label>
                   <input
+                    id="admin-table-id"
                     type="text"
                     value={editingTable.id || ''}
                     onChange={(e) => setEditingTable(prev => ({ ...prev, id: e.target.value.toUpperCase() }))}
                     placeholder="e.g. T09"
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg font-mono"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl font-mono focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">Table Name</label>
+                <div className="space-y-1">
+                  <label htmlFor="admin-table-name" className="font-semibold text-stone-700 block">Table Name</label>
                   <input
+                    id="admin-table-name"
                     type="text"
                     value={editingTable.tableNumber || ''}
                     onChange={(e) => setEditingTable(prev => ({ ...prev, tableNumber: e.target.value }))}
                     placeholder="e.g. Table 9"
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">Section</label>
+                <div className="space-y-1">
+                  <label htmlFor="admin-table-section" className="font-semibold text-stone-700 block">Section</label>
                   <input
+                    id="admin-table-section"
                     type="text"
                     value={editingTable.section || ''}
                     onChange={(e) => setEditingTable(prev => ({ ...prev, section: e.target.value }))}
-                    placeholder="e.g. Riverside Garden"
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg"
+                    placeholder="e.g. Main Hall"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
-                <div>
-                  <label className="font-bold text-stone-700 block mb-1">Guest Capacity</label>
+                <div className="space-y-1">
+                  <label htmlFor="admin-table-capacity" className="font-semibold text-stone-700 block">Guest Capacity</label>
                   <input
+                    id="admin-table-capacity"
                     type="number"
                     min={0}
                     value={editingTable.capacity || 2}
                     onChange={(e) => setEditingTable(prev => ({ ...prev, capacity: Number(e.target.value) }))}
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg font-mono"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl font-mono tabular-nums focus:bg-white focus:outline-none focus:border-teal-700"
                   />
                 </div>
               </div>
             </div>
 
-            <div className="pt-3 border-t border-stone-100 flex justify-end gap-2">
+            <div className="pt-3 border-t border-stone-100 flex justify-end gap-2.5">
               <button
                 type="button"
                 onClick={() => setEditingTable(null)}
-                className="px-3 py-2 text-xs text-stone-500"
+                className="min-h-[44px] px-4 py-2 text-xs font-semibold text-stone-600 hover:text-stone-900 rounded-xl hover:bg-stone-100 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleSaveTable}
-                className="px-4 py-2 text-xs font-bold bg-stone-900 text-white rounded-lg"
+                className="min-h-[44px] px-5 py-2 text-xs font-bold bg-teal-700 hover:bg-teal-800 text-white rounded-xl transition-colors cursor-pointer"
               >
                 Save Table
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Accessible Delete Confirmation Dialog */}
+      {pendingDelete && (
+        <div className="fixed inset-0 z-50 bg-stone-950/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-xl border border-stone-200 space-y-4">
+            <div className="space-y-1.5">
+              <h3 className="text-base font-bold text-stone-900 font-display">Confirm Deletion</h3>
+              <p className="text-xs text-stone-600 leading-relaxed">
+                Are you sure you want to permanently delete <strong>{pendingDelete.label}</strong>? This action is recorded in the security audit trail.
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-stone-100">
+              <button
+                type="button"
+                onClick={() => setPendingDelete(null)}
+                className="min-h-[42px] px-4 py-2 rounded-xl border border-stone-200 text-xs font-semibold text-stone-700 hover:bg-stone-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                className="min-h-[42px] px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold cursor-pointer"
+              >
+                Delete Permanently
               </button>
             </div>
           </div>

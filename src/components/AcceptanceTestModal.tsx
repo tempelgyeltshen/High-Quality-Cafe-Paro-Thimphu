@@ -117,6 +117,18 @@ export const AcceptanceTestModal: React.FC<AcceptanceTestModalProps> = ({
       name: 'Strict Guest Access Isolation & Anti-Bypass',
       description: 'Guests cannot leak tableTokens, modify/cancel orders, register as staff, or access admin/QR/staff APIs',
       status: 'pending'
+    },
+    {
+      id: 't17',
+      name: 'Anonymous Ordering & Private Tracking Token Isolation',
+      description: 'Anonymous users place orders without PII, receive a unique Confirmation ID + trackingToken, and cannot see other anonymous orders',
+      status: 'pending'
+    },
+    {
+      id: 't18',
+      name: 'GM & Admin Exclusive Complete Order History RBAC',
+      description: 'Complete order history is permitted strictly for GM (manager) and Admin (200), blocking Anonymous (401), Kitchen (403), and Cashier (403)',
+      status: 'pending'
     }
   ]);
 
@@ -134,7 +146,6 @@ export const AcceptanceTestModal: React.FC<AcceptanceTestModalProps> = ({
     const initialUser = getStoredUser();
 
     try {
-      // Authenticate as Admin to inspect table QR tokens for authentic end-to-end guest simulation
       const adminAuth = await api.login({ username: 'admin', pin: '1234' });
       setStoredAuth(adminAuth.token, adminAuth.user);
 
@@ -151,7 +162,7 @@ export const AcceptanceTestModal: React.FC<AcceptanceTestModalProps> = ({
       const testItem3 = validItems[2]?.id || 'item_potato_wedges';
       const testCatId = menu.categories[0]?.id || 'cat_starter';
 
-      // 1. Table 1 Guest Order Association (Zero staff auth)
+      // 1. Table 1 Guest Order Association
       updateTestStatus('t1', 'running');
       const resT1 = await api.createGuestOrder({
         tableId: 'T01',
@@ -165,7 +176,7 @@ export const AcceptanceTestModal: React.FC<AcceptanceTestModalProps> = ({
         updateTestStatus('t1', 'failed', 'Order table mismatch');
       }
 
-      // 2. Table 2 Guest Order Association (Zero staff auth)
+      // 2. Table 2 Guest Order Association
       updateTestStatus('t2', 'running');
       const resT2 = await api.createGuestOrder({
         tableId: 'T02',
@@ -259,7 +270,7 @@ export const AcceptanceTestModal: React.FC<AcceptanceTestModalProps> = ({
         updateTestStatus('t8', 'failed', 'Server allowed closing an unpaid session');
       }
 
-      // 9. Sold-out item protection (and clean up temporary dish afterwards)
+      // 9. Sold-out item protection
       updateTestStatus('t9', 'running');
       const soldOutDish = await api.saveMenuItem({
         name: 'Temporary Sold Out Item',
@@ -366,7 +377,7 @@ export const AcceptanceTestModal: React.FC<AcceptanceTestModalProps> = ({
         updateTestStatus('t13', 'passed', 'Calculations match currency standards');
       }
 
-      // 14. Scoped Guest Order Status Tracker (Own table allowed, cross-table blocked)
+      // 14. Scoped Guest Order Status Tracker
       updateTestStatus('t14', 'running');
       const ownTableOrders = await api.getGuestTableOrders('T01', t1Token);
       const crossTableAttempt = await fetch(`/api/tables/T02/orders?token=${encodeURIComponent(t1Token)}`);
@@ -473,6 +484,79 @@ export const AcceptanceTestModal: React.FC<AcceptanceTestModalProps> = ({
         );
       }
 
+      // 17. Anonymous Ordering & Private Tracking Token Isolation
+      updateTestStatus('t17', 'running');
+      const anonOrderA = await api.createGuestOrder({
+        tableId: 'TAKEAWAY',
+        items: [{ menuItemId: testItem1, quantity: 1 }],
+        customerNote: 'No onions'
+      });
+      const anonOrderB = await api.createGuestOrder({
+        tableId: 'TAKEAWAY',
+        items: [{ menuItemId: testItem2, quantity: 1 }]
+      });
+      const hasUniqueAnonNumber =
+        anonOrderA.order.orderNumber.startsWith('#HQC-ANON-') &&
+        anonOrderA.order.orderNumber !== anonOrderB.order.orderNumber;
+      const hasTrackingTokenA = Boolean(anonOrderA.trackingToken && anonOrderA.trackingToken.startsWith('trk_'));
+      const trackedOnlyA = await api.trackAnonymousOrders([anonOrderA.trackingToken || '']);
+      const isolatedToA =
+        trackedOnlyA.orders.length === 1 &&
+        trackedOnlyA.orders[0].id === anonOrderA.order.id &&
+        !('trackingToken' in trackedOnlyA.orders[0]);
+      const takeawayDumpBlocked = (await fetch('/api/tables/TAKEAWAY/orders')).status === 403;
+
+      if (hasUniqueAnonNumber && hasTrackingTokenA && isolatedToA && takeawayDumpBlocked) {
+        updateTestStatus(
+          't17',
+          'passed',
+          `Anonymous order ${anonOrderA.order.orderNumber} created with zero PII; private tracking isolated (1/1) & TAKEAWAY dump blocked (403)`
+        );
+      } else {
+        updateTestStatus('t17', 'failed', 'Anonymous order tracking isolation check failed');
+      }
+
+      // 18. GM & Admin Exclusive Complete Order History RBAC
+      updateTestStatus('t18', 'running');
+      const anonHistoryRes = await fetch('/api/admin/orders');
+      const chefHistoryRes = await fetch('/api/admin/orders', {
+        headers: { Authorization: `Bearer ${chefLogin.token}` }
+      });
+      const cashierHistoryRes = await fetch('/api/admin/orders', {
+        headers: { Authorization: `Bearer ${cashierLogin.token}` }
+      });
+      const gmLogin = await api.login({ username: 'gm', pin: '4567' });
+      const gmHistoryRes = await fetch('/api/admin/orders', {
+        headers: { Authorization: `Bearer ${gmLogin.token}` }
+      });
+      const gmStaffRes = await fetch('/api/admin/staff', {
+        headers: { Authorization: `Bearer ${gmLogin.token}` }
+      });
+      const adminHistoryRes = await fetch('/api/admin/orders', {
+        headers: { Authorization: `Bearer ${adminAuth.token}` }
+      });
+
+      if (
+        anonHistoryRes.status === 401 &&
+        chefHistoryRes.status === 403 &&
+        cashierHistoryRes.status === 403 &&
+        gmHistoryRes.status === 200 &&
+        gmStaffRes.status === 403 &&
+        adminHistoryRes.status === 200
+      ) {
+        updateTestStatus(
+          't18',
+          'passed',
+          'Order History RBAC verified: Anon=401, Kitchen=403, Cashier=403, GM=200 (StaffMgmt=403), Admin=200'
+        );
+      } else {
+        updateTestStatus(
+          't18',
+          'failed',
+          `History statuses: anon=${anonHistoryRes.status}, chef=${chefHistoryRes.status}, cashier=${cashierHistoryRes.status}, gm=${gmHistoryRes.status}, admin=${adminHistoryRes.status}`
+        );
+      }
+
       onRefreshAllData();
     } catch (err: any) {
       console.error('Test suite error', err);
@@ -489,51 +573,54 @@ export const AcceptanceTestModal: React.FC<AcceptanceTestModalProps> = ({
   const passedCount = tests.filter(t => t.status === 'passed').length;
 
   return (
-    <div className="fixed inset-0 z-50 bg-stone-950/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-stone-200 space-y-5 my-8">
-        <div className="flex items-center justify-between border-b border-stone-100 pb-4">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-600 flex items-center justify-center">
-              <ShieldCheck className="w-4 h-4" />
+    <div className="fixed inset-0 z-50 bg-stone-950/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="compliance-suite-title"
+        className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-xl border border-stone-200 space-y-5 my-8"
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-stone-100 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-teal-50 border border-teal-200 text-teal-800 flex items-center justify-center shrink-0">
+              <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-stone-900 font-display">
+              <h2 id="compliance-suite-title" className="text-base sm:text-lg font-bold text-stone-900 font-display">
                 Security &amp; Operational Compliance Suite
               </h2>
               <p className="text-xs text-stone-500">
-                Automated validation of all {tests.length} ordering, RBAC, and guest isolation controls
+                Automated verification of all {tests.length} ordering, RBAC, and guest isolation controls
               </p>
             </div>
           </div>
           <button
+            type="button"
+            aria-label="Close compliance suite"
             onClick={onClose}
-            className="w-8 h-8 rounded-lg hover:bg-stone-100 flex items-center justify-center text-stone-500 cursor-pointer"
+            className="w-9 h-9 rounded-lg hover:bg-stone-100 flex items-center justify-center text-stone-500 cursor-pointer shrink-0"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Progress meter */}
-        <div className="flex items-center justify-between text-xs font-semibold bg-stone-50 p-3 rounded-xl border border-stone-200">
-          <span>Verification Status</span>
-          <span className="font-mono text-emerald-700">
+        {/* Progress Summary */}
+        <div className="flex items-center justify-between text-xs font-semibold bg-stone-50 px-4 py-3 rounded-xl border border-stone-200">
+          <span className="text-stone-700">Verification Progress</span>
+          <span className="font-mono tabular-nums font-bold text-teal-800">
             {passedCount} / {tests.length} Criteria Verified
           </span>
         </div>
 
-        {/* Test items list */}
-        <div className="space-y-2 max-h-[420px] overflow-y-auto divide-y divide-stone-100 pr-1">
+        {/* Test Items List */}
+        <div className="max-h-[420px] overflow-y-auto divide-y divide-stone-100 pr-1">
           {tests.map(test => (
-            <div key={test.id} className="pt-2.5 first:pt-0 flex items-start justify-between gap-3 text-xs">
-              <div className="space-y-0.5">
-                <div className="font-bold text-stone-900 flex items-center gap-2">
-                  <span>{test.name}</span>
-                </div>
-                <div className="text-stone-500 text-[11px] leading-relaxed">
-                  {test.description}
-                </div>
+            <div key={test.id} className="py-3 first:pt-0 last:pb-0 flex items-start justify-between gap-4 text-xs">
+              <div className="space-y-1">
+                <div className="font-bold text-stone-900">{test.name}</div>
+                <div className="text-stone-500 leading-relaxed">{test.description}</div>
                 {test.details && (
-                  <div className="text-[11px] font-mono text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded mt-1 inline-block">
+                  <div className="text-[11px] font-mono text-emerald-900 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg mt-1 inline-block">
                     {test.details}
                   </div>
                 )}
@@ -541,21 +628,21 @@ export const AcceptanceTestModal: React.FC<AcceptanceTestModalProps> = ({
 
               <div className="shrink-0 pt-0.5">
                 {test.status === 'pending' && (
-                  <span className="text-[11px] text-stone-400 font-mono">Ready</span>
+                  <span className="text-xs text-stone-400 font-mono">Ready</span>
                 )}
                 {test.status === 'running' && (
-                  <span className="text-[11px] text-amber-600 font-mono flex items-center gap-1">
+                  <span className="text-xs text-amber-700 font-mono flex items-center gap-1.5 font-semibold">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" /> Running
                   </span>
                 )}
                 {test.status === 'passed' && (
-                  <span className="text-[11px] text-emerald-600 font-bold flex items-center gap-1 font-mono">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> PASSED
+                  <span className="text-xs text-emerald-700 font-bold flex items-center gap-1 font-mono">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Passed
                   </span>
                 )}
                 {test.status === 'failed' && (
-                  <span className="text-[11px] text-rose-600 font-bold flex items-center gap-1 font-mono">
-                    <XCircle className="w-3.5 h-3.5" /> FAILED
+                  <span className="text-xs text-rose-700 font-bold flex items-center gap-1 font-mono">
+                    <XCircle className="w-3.5 h-3.5" /> Failed
                   </span>
                 )}
               </div>
@@ -563,18 +650,20 @@ export const AcceptanceTestModal: React.FC<AcceptanceTestModalProps> = ({
           ))}
         </div>
 
-        {/* Action button */}
-        <div className="pt-2 border-t border-stone-100 flex items-center justify-end gap-3">
+        {/* Footer Actions */}
+        <div className="pt-3 border-t border-stone-100 flex items-center justify-end gap-3">
           <button
+            type="button"
             onClick={onClose}
-            className="px-4 py-2 text-xs font-semibold text-stone-600 hover:text-stone-900 cursor-pointer"
+            className="min-h-[44px] px-4 py-2 text-xs font-semibold text-stone-600 hover:text-stone-900 rounded-xl hover:bg-stone-100 cursor-pointer"
           >
             Close
           </button>
           <button
+            type="button"
             onClick={runAllAcceptanceTests}
             disabled={isRunningAll}
-            className="px-5 py-2.5 bg-stone-900 hover:bg-stone-800 text-white text-xs font-bold rounded-xl shadow-md transition-colors flex items-center gap-2 disabled:opacity-50 cursor-pointer"
+            className="min-h-[44px] px-5 py-2.5 bg-teal-700 hover:bg-teal-800 text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-2 disabled:opacity-50 cursor-pointer"
           >
             {isRunningAll ? (
               <>

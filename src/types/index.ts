@@ -95,11 +95,16 @@ export interface OrderItem extends CartItem {
 
 export type OrderStatus = 'submitted' | 'acknowledged' | 'preparing' | 'ready' | 'served' | 'cancelled';
 
+export type OrderMode = 'table_qr' | 'anonymous_pickup' | 'counter';
+
 export interface OrderRound {
   id: string;
-  orderNumber: string; // e.g. "#HQC-1001"
+  orderNumber: string; // e.g. "#HQC-T01-1001" or "#HQC-ANON-1001"
   sessionId: string;
   tableId: string;
+  tableNumber?: string;
+  orderMode?: OrderMode;
+  anonymousLabel?: string; // Non-identifying label e.g. "Anonymous Guest"
   roundNumber: number;
   items: OrderItem[];
   subtotal: number;
@@ -108,6 +113,26 @@ export interface OrderRound {
   updatedAt: string;
   customerNote?: string;
   idempotencyKey?: string;
+  trackingToken?: string; // Returned only on creation to the placing client; stripped from listings
+}
+
+export interface OrderHistoryRecord extends Omit<OrderRound, 'idempotencyKey' | 'trackingToken'> {
+  tableNumber: string;
+  section: string;
+  billId?: string;
+  billNumber?: string;
+  billStatus?: BillStatus;
+  billTotal?: number;
+  billPaidAmount?: number;
+  billBalanceDue?: number;
+}
+
+export interface OrderHistorySummary {
+  totalOrders: number;
+  activeOrders: number;
+  completedOrders: number;
+  cancelledOrders: number;
+  totalOrderValue: number;
 }
 
 export type BillStatus = 'open' | 'preparing' | 'paid' | 'voided';
