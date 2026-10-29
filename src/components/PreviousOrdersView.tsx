@@ -8,7 +8,6 @@ import {
   Check,
   MessageSquare,
   Copy,
-  ShieldCheck,
   Trash2
 } from 'lucide-react';
 import {
@@ -48,15 +47,6 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
 
-  const totalItemsCount = orders.reduce(
-    (acc, order) => acc + order.items.reduce((sum, item) => sum + item.quantity, 0),
-    0
-  );
-
-  const activeRoundsCount = orders.filter(
-    o => o.status !== 'served' && o.status !== 'cancelled'
-  ).length;
-
   const handleCopyConfirmation = async (orderNumber: string, orderId: string) => {
     try {
       await navigator.clipboard.writeText(orderNumber);
@@ -74,13 +64,13 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
       case 'submitted':
         return { label: 'Order Received', tone: 'text-amber-800 font-semibold' };
       case 'acknowledged':
-        return { label: 'Kitchen Acknowledged', tone: 'text-sky-800 font-semibold' };
+        return { label: 'Received by Kitchen', tone: 'text-sky-800 font-semibold' };
       case 'preparing':
         return { label: 'Preparing Now', tone: 'text-sky-800 font-bold' };
       case 'ready':
-        return { label: 'Ready for Service / Pickup', tone: 'text-emerald-800 font-bold' };
+        return { label: 'Ready to Serve', tone: 'text-emerald-800 font-bold' };
       case 'served':
-        return { label: 'Completed', tone: 'text-stone-600 font-medium' };
+        return { label: 'Served', tone: 'text-stone-600 font-medium' };
       case 'cancelled':
         return { label: 'Cancelled', tone: 'text-rose-700 font-semibold' };
       default:
@@ -130,36 +120,77 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
     }
   };
 
-  const destinationLabel = currentTable
-    ? `${currentTable.tableNumber} · ${currentTable.section}`
-    : 'Counter Pickup';
+  const getCleanDestination = (order: OrderRound) => {
+    if (
+      order.tableId === 'TAKEAWAY' ||
+      !order.tableNumber ||
+      order.tableNumber.toLowerCase().includes('anonymous')
+    ) {
+      return 'Counter Pickup';
+    }
+    return order.tableNumber;
+  };
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
-      {/* Page Header Card */}
+      {/* Clean Page Header */}
       <div className="bg-white rounded-2xl border border-stone-200 p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
-            <span className="font-semibold text-teal-800">{destinationLabel}</span>
-            <span aria-hidden="true">·</span>
-            <span>Private Guest Session</span>
-          </div>
+          {currentTable && (
+            <div className="text-xs font-semibold text-teal-800">
+              {currentTable.tableNumber}
+              {currentTable.section ? ` · ${currentTable.section}` : ''}
+            </div>
+          )}
           <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-stone-900 font-display">
-            Your Active &amp; Recent Orders
+            My Orders
           </h2>
           <p className="text-xs sm:text-sm text-stone-600">
-            Follow live kitchen updates right from your phone. Your order is tracked privately without storing your name.
+            Track live preparation updates for your current dishes and drinks.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 self-start sm:self-auto shrink-0">
+        <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-auto shrink-0">
+          {hasLocalAnonymousTokens && onClearLocalOrders && orders.length > 0 && (
+            !confirmClearLocal ? (
+              <button
+                type="button"
+                onClick={() => setConfirmClearLocal(true)}
+                className="min-h-[44px] px-3.5 py-2.5 rounded-xl border border-stone-200 bg-white hover:bg-stone-50 text-stone-600 hover:text-stone-900 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-stone-400 shrink-0" />
+                <span>Clear List</span>
+              </button>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClearLocalOrders();
+                    setConfirmClearLocal(false);
+                  }}
+                  className="min-h-[44px] px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  Confirm
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmClearLocal(false)}
+                  className="min-h-[44px] px-3 py-2 rounded-xl border border-stone-200 bg-white text-stone-700 text-xs font-medium hover:bg-stone-50 transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            )
+          )}
+
           {onRefresh && (
             <button
               type="button"
               onClick={onRefresh}
               disabled={isRefreshing}
               className="min-h-[44px] px-3.5 py-2.5 rounded-xl border border-stone-200 bg-white text-stone-700 hover:text-stone-900 hover:bg-stone-50 transition-colors flex items-center gap-1.5 text-xs font-semibold whitespace-nowrap cursor-pointer"
-              title="Refresh live order status"
+              title="Refresh order status"
             >
               <RefreshCw className={`w-4 h-4 shrink-0 ${isRefreshing ? 'animate-spin text-teal-700' : ''}`} />
               <span>Refresh</span>
@@ -172,87 +203,10 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
             className="min-h-[44px] px-4 py-2.5 bg-teal-700 hover:bg-teal-800 text-white rounded-xl text-xs sm:text-sm font-bold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Plus className="w-4 h-4 shrink-0" />
-            <span>Add More Items</span>
+            <span>Order More</span>
           </button>
         </div>
       </div>
-
-      {/* Privacy & Shared-Device Local Token Control */}
-      <div className="bg-white rounded-xl border border-stone-200 px-4 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-        <div className="flex items-start gap-2.5 text-stone-600">
-          <ShieldCheck className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
-          <p className="leading-relaxed">
-            <strong className="text-stone-900">Private Device Tracking:</strong> Only orders placed from this browser or your verified table QR appear here. Complete café order archives are restricted to authorized management.
-          </p>
-        </div>
-
-        {hasLocalAnonymousTokens && onClearLocalOrders && (
-          <div className="shrink-0 self-end sm:self-center">
-            {!confirmClearLocal ? (
-              <button
-                type="button"
-                onClick={() => setConfirmClearLocal(true)}
-                className="min-h-[40px] px-3 py-1.5 rounded-lg border border-stone-300 bg-white hover:bg-stone-50 text-stone-700 font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer"
-              >
-                <Trash2 className="w-3.5 h-3.5 text-stone-500 shrink-0" />
-                <span>Clear Device History</span>
-              </button>
-            ) : (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    onClearLocalOrders();
-                    setConfirmClearLocal(false);
-                  }}
-                  className="min-h-[40px] px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold transition-colors whitespace-nowrap cursor-pointer"
-                >
-                  Confirm Clear
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmClearLocal(false)}
-                  className="min-h-[40px] px-3 py-1.5 rounded-lg border border-stone-300 bg-white text-stone-700 font-medium hover:bg-stone-50 transition-colors whitespace-nowrap cursor-pointer"
-                >
-                  Cancel
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Summary Metrics Bar */}
-      {orders.length > 0 && (
-        <div className="grid grid-cols-3 gap-3 sm:gap-4">
-          <div className="bg-white p-3.5 sm:p-4 rounded-xl border border-stone-200 text-center space-y-0.5">
-            <span className="text-xs font-medium text-stone-500 block truncate">
-              Order Rounds
-            </span>
-            <span className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-stone-900 block">
-              {orders.length}
-            </span>
-          </div>
-
-          <div className="bg-white p-3.5 sm:p-4 rounded-xl border border-stone-200 text-center space-y-0.5">
-            <span className="text-xs font-medium text-stone-500 block truncate">
-              In Progress
-            </span>
-            <span className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-teal-800 block">
-              {activeRoundsCount}
-            </span>
-          </div>
-
-          <div className="bg-white p-3.5 sm:p-4 rounded-xl border border-stone-200 text-center space-y-0.5">
-            <span className="text-xs font-medium text-stone-500 block truncate">
-              Total Dishes
-            </span>
-            <span className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-stone-900 block">
-              {totalItemsCount}
-            </span>
-          </div>
-        </div>
-      )}
 
       {/* Empty State */}
       {orders.length === 0 ? (
@@ -260,22 +214,22 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
           <div className="w-12 h-12 bg-teal-50 border border-teal-200/80 text-teal-800 rounded-2xl flex items-center justify-center mx-auto">
             <Utensils className="w-6 h-6" />
           </div>
-          <div className="space-y-1.5 max-w-md mx-auto">
+          <div className="space-y-1.5 max-w-sm mx-auto">
             <h3 className="text-base sm:text-lg font-bold text-stone-900 font-display">
-              No Orders Placed Yet
+              No Orders Yet
             </h3>
             <p className="text-xs sm:text-sm text-stone-600 leading-relaxed">
-              Explore our menu and place your order whenever you&apos;re ready—no account, name, or phone number needed. Your Confirmation ID and live preparation progress will appear right here.
+              Browse the menu to select your favorite dishes and drinks. Your live order status will appear right here.
             </p>
           </div>
-          <div className="pt-2">
+          <div className="pt-1">
             <button
               type="button"
               onClick={onOrderMore}
               className="min-h-[44px] px-5 py-2.5 bg-teal-700 hover:bg-teal-800 text-white rounded-xl text-xs sm:text-sm font-bold transition-colors inline-flex items-center gap-2 cursor-pointer"
             >
               <ShoppingBag className="w-4 h-4 shrink-0" />
-              <span>Explore Menu</span>
+              <span>View Menu</span>
             </button>
           </div>
         </div>
@@ -284,10 +238,7 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
           {sortedOrders.map(order => {
             const statusInfo = getOrderStatusLabel(order.status);
             const isCopied = copiedOrderId === order.id;
-            const orderDestination =
-              order.tableId === 'TAKEAWAY'
-                ? 'Counter Pickup'
-                : order.tableNumber || order.tableId;
+            const orderDestination = getCleanDestination(order);
 
             return (
               <article
@@ -305,7 +256,7 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
                         type="button"
                         onClick={() => handleCopyConfirmation(order.orderNumber, order.id)}
                         className="min-h-[34px] px-2.5 py-1 rounded-lg border border-stone-200 bg-white hover:bg-stone-100 text-xs font-semibold text-stone-700 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer"
-                        title="Copy Order Confirmation Number"
+                        title="Copy order number"
                       >
                         {isCopied ? (
                           <>
@@ -315,15 +266,13 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
                         ) : (
                           <>
                             <Copy className="w-3.5 h-3.5 text-stone-500 shrink-0" />
-                            <span>Copy ID</span>
+                            <span>Copy</span>
                           </>
                         )}
                       </button>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
-                      <span>{order.anonymousLabel || 'Anonymous Guest'}</span>
-                      <span aria-hidden="true">·</span>
                       <span className="font-medium text-stone-700">{orderDestination}</span>
                       <span aria-hidden="true">·</span>
                       <span className="inline-flex items-center gap-1 tabular-nums">
@@ -353,7 +302,7 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
                 {/* Items List */}
                 <div className="p-4 sm:p-5 space-y-3">
                   <h4 className="text-xs font-bold text-stone-700">
-                    Ordered Dishes ({order.items.reduce((s, it) => s + it.quantity, 0)})
+                    Items ({order.items.reduce((s, it) => s + it.quantity, 0)})
                   </h4>
 
                   <div className="divide-y divide-stone-100">
@@ -368,9 +317,6 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
                               {item.quantity}×
                             </span>
                             <span className="font-semibold text-stone-900">{item.name}</span>
-                            <span className="text-xs text-stone-500">
-                              · {item.dietType === 'veg' ? 'Pure Veg' : item.dietType === 'vegan' ? 'Vegan' : 'Non-Veg'}
-                            </span>
                           </div>
 
                           {item.customizations.length > 0 && (
@@ -408,7 +354,7 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
                     <div className="mt-3 p-3 bg-stone-50 border border-stone-200 rounded-xl text-xs text-stone-700 flex items-start gap-2">
                       <MessageSquare className="w-3.5 h-3.5 text-stone-500 shrink-0 mt-0.5" />
                       <div>
-                        <span className="font-semibold text-stone-900 mr-1">Kitchen Note:</span>
+                        <span className="font-semibold text-stone-900 mr-1">Note:</span>
                         <span>{order.customerNote}</span>
                       </div>
                     </div>
@@ -416,7 +362,7 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
 
                   {settings.showPricesOnCustomerMenu && (
                     <div className="pt-3 border-t border-stone-100 flex justify-between items-center text-xs sm:text-sm">
-                      <span className="font-medium text-stone-600">Round Subtotal</span>
+                      <span className="font-medium text-stone-600">Subtotal</span>
                       <span className="font-mono tabular-nums font-bold text-stone-900">
                         Nu. {order.subtotal}
                       </span>
@@ -426,27 +372,6 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
               </article>
             );
           })}
-
-          {/* Friendly Light Callout for Ordering Another Round */}
-          <div className="p-5 sm:p-6 bg-white border border-stone-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="space-y-0.5">
-              <h4 className="font-bold text-sm sm:text-base font-display text-stone-900">
-                Would you like anything else?
-              </h4>
-              <p className="text-xs sm:text-sm text-stone-600">
-                Add another drink, dessert, or dish anytime—new items are sent straight to the kitchen.
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={onOrderMore}
-              className="min-h-[44px] px-5 py-2.5 bg-teal-700 hover:bg-teal-800 text-white font-bold rounded-xl text-xs sm:text-sm flex items-center justify-center gap-2 transition-colors shrink-0 whitespace-nowrap cursor-pointer"
-            >
-              <Plus className="w-4 h-4 shrink-0" />
-              <span>Browse Menu</span>
-            </button>
-          </div>
         </div>
       )}
     </div>

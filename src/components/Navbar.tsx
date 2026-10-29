@@ -53,7 +53,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     }
   };
 
-  // STRICT ISOLATED GUEST HEADER: Zero links, buttons, or menus to staff/admin areas
+  // STRICT ISOLATED GUEST HEADER: Clean café branding + assigned table (if dining in), zero internal labels or staff links
   if (isCustomerView) {
     return (
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-stone-200 text-stone-900 no-print w-full">
@@ -68,33 +68,24 @@ export const Navbar: React.FC<NavbarProps> = ({
                 High Quality Cafe
               </span>
               <span className="text-[11px] sm:text-xs text-stone-500 truncate block leading-tight">
-                Paro, Bhutan · Open 24/7
+                Paro · Open 24/7
               </span>
             </div>
           </div>
 
-          {/* Assigned Table / Anonymous Context Only (Zero Staff/Admin Links) */}
-          <div className="flex items-center gap-2 shrink-0 text-right">
-            {verifiedTableLabel ? (
-              <div>
-                <span className="text-xs sm:text-sm font-bold text-stone-900 font-display block leading-tight">
-                  {verifiedTableLabel}
-                </span>
+          {/* Table Number Indicator (shown only when dining at a verified table) */}
+          {verifiedTableLabel && (
+            <div className="text-right shrink-0">
+              <span className="text-xs sm:text-sm font-bold text-stone-900 font-display block leading-tight">
+                {verifiedTableLabel}
+              </span>
+              {verifiedTableSection && (
                 <span className="text-[11px] text-teal-800 font-medium block leading-tight">
-                  {verifiedTableSection ? `${verifiedTableSection} · Private QR` : 'Private Table Session'}
+                  {verifiedTableSection}
                 </span>
-              </div>
-            ) : (
-              <div>
-                <span className="text-xs sm:text-sm font-semibold text-stone-900 block leading-tight">
-                  Guest Ordering
-                </span>
-                <span className="text-[11px] text-stone-500 block leading-tight">
-                  Anonymous · No Login
-                </span>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
         </div>
       </header>
     );

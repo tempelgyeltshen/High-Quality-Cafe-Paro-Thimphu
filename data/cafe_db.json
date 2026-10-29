@@ -9,7 +9,7 @@
     "serviceChargeRate": 0.1,
     "allowGuestOrdering": true,
     "kitchenAudioAlert": true,
-    "showPricesOnCustomerMenu": false,
+    "showPricesOnCustomerMenu": true,
     "address": "High Quality Cafe, Paro Town, Paro, Bhutan",
     "phone": "+975 8 271234"
   },

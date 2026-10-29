@@ -46,7 +46,7 @@ const DEFAULT_SETTINGS: SystemSettings = {
   serviceChargeRate: 0.10,
   allowGuestOrdering: true,
   kitchenAudioAlert: false,
-  showPricesOnCustomerMenu: false,
+  showPricesOnCustomerMenu: true,
   address: 'High Quality Cafe, Paro Town, Paro, Bhutan',
   phone: '+975 8 271234'
 };

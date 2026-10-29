@@ -37,7 +37,7 @@ export const AccessDeniedView: React.FC<AccessDeniedViewProps> = ({
 
   const getExplanation = () => {
     if (!currentUser) {
-      return 'Guests can browse the menu, place orders privately without an account, and track their own Order Confirmation ID. Staff dashboards, complete order archives, and reports require an authorized staff sign-in.';
+      return 'This area is reserved for café staff. Return to the menu to browse dishes and place an order, or sign in with a staff account.';
     }
     if (currentUser.role === 'kitchen') {
       return 'Kitchen Cook accounts have dedicated access to the Chef Dashboard for preparing incoming orders. Billing, order archives, and system settings require General Manager or Administrator permissions.';
@@ -58,24 +58,28 @@ export const AccessDeniedView: React.FC<AccessDeniedViewProps> = ({
         <div className="space-y-1.5">
           <div className="inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-amber-800">
             <Lock className="w-3.5 h-3.5 shrink-0" />
-            <span>{currentUser ? 'Restricted Staff Workspace' : 'Staff Sign-In Required'}</span>
+            <span>{currentUser ? 'Restricted Staff Workspace' : 'Staff Area'}</span>
           </div>
           <h1 className="text-xl sm:text-2xl font-bold text-stone-900 font-display">
-            Access Restricted
+            {currentUser ? 'Access Restricted' : 'Staff Sign-In Required'}
           </h1>
-          <p className="text-xs sm:text-sm text-stone-500">
-            Requested page:{' '}
-            <strong className="text-stone-800">
-              {viewLabels[attemptedView] || attemptedView}
-            </strong>
-          </p>
+          {currentUser && (
+            <p className="text-xs sm:text-sm text-stone-500">
+              Requested page:{' '}
+              <strong className="text-stone-800">
+                {viewLabels[attemptedView] || attemptedView}
+              </strong>
+            </p>
+          )}
         </div>
 
         <div className="p-4 bg-stone-50 rounded-xl border border-stone-200 text-xs text-stone-600 text-left space-y-2">
-          <div className="flex items-center justify-between text-xs text-stone-500 border-b border-stone-200 pb-2">
-            <span>Current Session</span>
-            <span className="font-semibold text-stone-900">{roleName}</span>
-          </div>
+          {currentUser && (
+            <div className="flex items-center justify-between text-xs text-stone-500 border-b border-stone-200 pb-2">
+              <span>Signed-In Role</span>
+              <span className="font-semibold text-stone-900">{roleName}</span>
+            </div>
+          )}
           <p className="leading-relaxed">{getExplanation()}</p>
         </div>
 

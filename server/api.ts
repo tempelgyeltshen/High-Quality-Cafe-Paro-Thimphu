@@ -381,7 +381,7 @@ apiRouter.post('/orders', guestOrderLimiter, (req: Request, res: Response) => {
 
     if (!staff && !settings.allowGuestOrdering) {
       return res.status(403).json({
-        error: 'Anonymous self-ordering is currently disabled. Please place your order with café staff.'
+        error: 'Online ordering is currently paused. Please place your order at the counter.'
       });
     }
 

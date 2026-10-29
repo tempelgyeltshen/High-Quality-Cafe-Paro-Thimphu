@@ -82,7 +82,7 @@ function getInitialSeedData(): DatabaseSchema {
     serviceChargeRate: 0.10, // 10% Service Charge
     allowGuestOrdering: true,
     kitchenAudioAlert: true,
-    showPricesOnCustomerMenu: false, // User explicitly requested: "price shouldnt be mentioned"
+    showPricesOnCustomerMenu: true,
     address: 'High Quality Cafe, Paro Town, Paro, Bhutan',
     phone: '+975 8 271234',
   };

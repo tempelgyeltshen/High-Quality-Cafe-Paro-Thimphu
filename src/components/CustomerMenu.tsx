@@ -4,7 +4,6 @@ import {
   Plus,
   Minus,
   ShoppingBag,
-  Clock,
   AlertCircle,
   X,
   CheckCircle2,
@@ -12,13 +11,10 @@ import {
   Leaf,
   Info,
   ArrowRight,
-  FileText,
   Utensils,
   History,
-  ShieldCheck,
   Copy,
-  Check,
-  Lock
+  Check
 } from 'lucide-react';
 import {
   MenuItem,
@@ -83,8 +79,9 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [customerNote, setCustomerNote] = useState('');
-  const [isPrivacyModalOpen, setIsPrivacyModalOpen] = useState(false);
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+
+  const menuSectionRef = useRef<HTMLDivElement>(null);
 
   // Customize Item Modal
   const [itemToCustomize, setItemToCustomize] = useState<MenuItem | null>(null);
@@ -102,7 +99,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [copiedConfirmation, setCopiedConfirmation] = useState(false);
 
-  // Mint a fresh idempotency seed ONLY when cart items/quantities or kitchen note actually change
+  // Mint a fresh idempotency seed ONLY when cart items/quantities or preparation note change
   const cartFingerprint = useMemo(
     () =>
       JSON.stringify({
@@ -122,31 +119,28 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
   }, [cartFingerprint]);
 
   const hasUnverifiedTableAttempt = Boolean(attemptedTableId && !isTableTokenValidated);
-  const canPlaceAnonymousOrder = Boolean(settings.allowGuestOrdering && !hasUnverifiedTableAttempt);
+  const canPlaceOrder = Boolean(settings.allowGuestOrdering && !hasUnverifiedTableAttempt);
 
   const activeDestinationLabel =
     isTableTokenValidated && verifiedTable
       ? verifiedTable.tableNumber
-      : hasUnverifiedTableAttempt
-      ? `Unverified ${attemptedTableId}`
       : 'Counter Pickup';
 
-  const activeDestinationSubtitle =
+  const activeDestinationDetail =
     isTableTokenValidated && verifiedTable
-      ? `${verifiedTable.section} · Verified Table QR`
-      : hasUnverifiedTableAttempt
-      ? 'Scan official table QR or switch to Counter Pickup'
-      : 'Anonymous Order · No name or login required';
+      ? verifiedTable.section
+        ? `${verifiedTable.tableNumber} · ${verifiedTable.section}`
+        : verifiedTable.tableNumber
+      : 'Counter Pickup';
 
-  // Scoped orders belonging ONLY to this verified table session or this device's private tracking tokens
-  const trackedGuestOrders = useMemo(() => {
+  const trackedOrders = useMemo(() => {
     if (sessionOrders && sessionOrders.length > 0) return sessionOrders;
     return activeOrders;
   }, [sessionOrders, activeOrders]);
 
   const activeCookingCount = useMemo(() => {
-    return trackedGuestOrders.filter(o => o.status !== 'served' && o.status !== 'cancelled').length;
-  }, [trackedGuestOrders]);
+    return trackedOrders.filter(o => o.status !== 'served' && o.status !== 'cancelled').length;
+  }, [trackedOrders]);
 
   // Filtered menu items
   const filteredItems = useMemo(() => {
@@ -167,6 +161,13 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
       return true;
     });
   }, [menuItems, selectedCategory, dietFilter, searchQuery]);
+
+  const handleScrollToMenu = () => {
+    setCustomerViewTab('menu');
+    requestAnimationFrame(() => {
+      menuSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
 
   const openCustomizer = (item: MenuItem) => {
     if (item.soldOut || !item.isAvailable) return;
@@ -266,11 +267,11 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
 
   const handleConfirmOrder = async () => {
     if (cart.length === 0 || isSubmitting || submittingRef.current) return;
-    if (!canPlaceAnonymousOrder) {
+    if (!canPlaceOrder) {
       setSubmitError(
         hasUnverifiedTableAttempt
-          ? 'This table link is missing a valid QR security token. Scan your table QR code or switch to Counter Pickup.'
-          : 'Guest self-ordering is temporarily paused. Please place your order at the counter.'
+          ? 'Please scan the QR code on your table, or switch to Counter Pickup.'
+          : 'Online ordering is temporarily paused. Please place your order at the counter.'
       );
       return;
     }
@@ -280,7 +281,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
       setIsSubmitting(true);
       setSubmitError(null);
 
-      const scopeKey = isTableTokenValidated && verifiedTable ? verifiedTable.id : 'ANON';
+      const scopeKey = isTableTokenValidated && verifiedTable ? verifiedTable.id : 'PICKUP';
       const idempotencyKey = `idemp_${scopeKey}_${cartAttemptSeed}`;
       const orderItemsPayload = cart.map(item => ({
         menuItemId: item.menuItemId,
@@ -319,183 +320,133 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
       setCopiedConfirmation(true);
       setTimeout(() => setCopiedConfirmation(false), 2200);
     } catch {
-      // Ignore if clipboard blocked
+      // Ignore if clipboard unavailable
     }
+  };
+
+  const getSubmittedDestinationLabel = (order: OrderRound) => {
+    if (
+      order.tableId === 'TAKEAWAY' ||
+      !order.tableNumber ||
+      order.tableNumber.toLowerCase().includes('anonymous')
+    ) {
+      return 'Counter Pickup';
+    }
+    return order.tableNumber;
   };
 
   return (
     <div className="min-h-screen bg-stone-50 pb-36 sm:pb-32">
-      {/* Welcoming Sunlit Storefront Header */}
-      <section className="bg-white border-b border-stone-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 md:py-10">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-center">
-            <div className="lg:col-span-7 space-y-3.5">
-              {/* Session & Privacy Context Line */}
-              <div className="text-xs">
-                {isTableTokenValidated && verifiedTable ? (
-                  <div className="inline-flex flex-wrap items-center gap-2 text-teal-800 font-medium">
-                    <CheckCircle2 className="w-4 h-4 text-teal-700 shrink-0" />
-                    <span className="font-bold text-stone-900">{verifiedTable.tableNumber}</span>
-                    <span className="text-stone-300" aria-hidden="true">
-                      ·
-                    </span>
-                    <span className="text-stone-600">{verifiedTable.section}</span>
-                    <span className="text-stone-300" aria-hidden="true">
-                      ·
-                    </span>
-                    <span>Private Table Ordering</span>
-                  </div>
-                ) : hasUnverifiedTableAttempt ? (
-                  <div
-                    role="alert"
-                    className="flex flex-wrap items-center gap-2.5 bg-amber-50 border border-amber-200 text-amber-950 px-3.5 py-2.5 rounded-xl"
+      {/* Clean, Minimal Food-First Hero Banner */}
+      {customerViewTab === 'menu' && (
+        <section className="bg-white border-b border-stone-200">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 sm:py-12 lg:py-14">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-7 sm:gap-9 lg:gap-12 items-center">
+              <div className="lg:col-span-6 space-y-5">
+                <h1 className="text-3xl sm:text-4xl lg:text-[2.75rem] font-bold tracking-tight text-stone-900 font-display leading-[1.12] text-balance">
+                  Fresh Himalayan Dishes &amp; Handcrafted Coffee
+                </h1>
+
+                <p className="text-sm sm:text-base text-stone-600 max-w-lg leading-relaxed">
+                  Made fresh to order—customize your meal and place your order in seconds.
+                </p>
+
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={handleScrollToMenu}
+                    className="min-h-[48px] px-7 py-3.5 bg-teal-700 hover:bg-teal-800 text-white text-sm sm:text-base font-bold rounded-xl transition-colors inline-flex items-center gap-2 shadow-xs whitespace-nowrap cursor-pointer"
                   >
-                    <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
-                    <span>
-                      Unverified link for <strong>{attemptedTableId}</strong>. Scan the QR stand on your table, or order for counter pickup instead.
-                    </span>
-                    {onClearUnverifiedTable && (
-                      <button
-                        type="button"
-                        onClick={onClearUnverifiedTable}
-                        className="min-h-[36px] px-3 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs transition-colors whitespace-nowrap cursor-pointer"
-                      >
-                        Switch to Counter Pickup
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <div className="inline-flex flex-wrap items-center gap-2 text-stone-600">
-                    <ShieldCheck className="w-4 h-4 text-teal-700 shrink-0" />
-                    <span className="font-semibold text-stone-900">Anonymous Guest Ordering</span>
-                    <span className="text-stone-300" aria-hidden="true">
-                      ·
-                    </span>
-                    <span>No account, name, or phone number required</span>
-                  </div>
-                )}
+                    <span>Order Now</span>
+                    <ArrowRight className="w-4 h-4 shrink-0" />
+                  </button>
+                </div>
               </div>
 
-              <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold tracking-tight text-stone-900 font-display">
-                {settings.restaurantName}
-              </h1>
-
-              <p className="text-sm sm:text-base text-stone-600 max-w-2xl leading-relaxed">
-                {settings.tagline}. Browse freshly prepared Bhutanese favorites, comfort plates, and handcrafted coffee—place your order privately and follow kitchen progress right on your phone.
-              </p>
-
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-stone-500 pt-1">
-                <span className="inline-flex items-center gap-1.5 text-stone-700 font-medium">
-                  <Clock className="w-3.5 h-3.5 text-teal-700 shrink-0" />
-                  <span>Open 24/7</span>
-                </span>
-                <span className="text-stone-300" aria-hidden="true">
-                  ·
-                </span>
-                <span>Paro Town, Bhutan</span>
-                {settings.showPricesOnCustomerMenu && (
-                  <>
-                    <span className="text-stone-300" aria-hidden="true">
-                      ·
-                    </span>
-                    <span>Prices in Nu. (5% Tax &amp; 10% Service)</span>
-                  </>
-                )}
-                <span className="text-stone-300" aria-hidden="true">
-                  ·
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setIsPrivacyModalOpen(true)}
-                  className="inline-flex items-center gap-1 text-teal-800 hover:text-teal-900 underline underline-offset-4 font-semibold cursor-pointer"
-                >
-                  <Lock className="w-3 h-3 shrink-0" />
-                  <span>Privacy &amp; Data Notice</span>
-                </button>
-                <span className="text-stone-300" aria-hidden="true">
-                  ·
-                </span>
-                <a
-                  href="/assets/aistudio/paro_menu_final__Recovered__13981981.pdf"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-stone-700 hover:text-teal-800 underline underline-offset-4 font-semibold"
-                >
-                  <FileText className="w-3 h-3 shrink-0" />
-                  <span>Printed PDF Menu</span>
-                </a>
-              </div>
-            </div>
-
-            {/* Warm Dining Room Photograph with Resilient Fallback */}
-            <div className="lg:col-span-5 hidden sm:block">
-              <div className="relative rounded-2xl overflow-hidden border border-stone-200 aspect-[16/9] lg:aspect-[16/10] bg-stone-100">
-                {!failedImages['hero'] ? (
-                  <img
-                    src="/src/assets/images/hero_cafe_ambiance_1792466932618.jpg"
-                    alt="High Quality Cafe warm dining room in Paro"
-                    className="w-full h-full object-cover"
-                    loading="eager"
-                    decoding="async"
-                    referrerPolicy="no-referrer"
-                    onError={() => setFailedImages(prev => ({ ...prev, hero: true }))}
-                  />
-                ) : (
-                  <div className="w-full h-full flex flex-col items-center justify-center bg-stone-100 text-stone-500 p-6 text-center">
-                    <Utensils className="w-8 h-8 text-teal-700 mb-2" />
-                    <span className="text-xs font-semibold text-stone-700">
-                      High Quality Cafe · Paro, Bhutan
-                    </span>
-                  </div>
-                )}
+              <div className="lg:col-span-6">
+                <div className="relative rounded-2xl overflow-hidden border border-stone-200/80 aspect-[16/10] bg-stone-100 shadow-xs">
+                  {!failedImages['hero'] ? (
+                    <img
+                      src="/src/assets/images/hero_signature_food_1793252236494.jpg"
+                      alt="Freshly steamed dumplings with chili sauce, handcrafted latte, and pastries"
+                      className="w-full h-full object-cover"
+                      loading="eager"
+                      decoding="async"
+                      referrerPolicy="no-referrer"
+                      onError={() => setFailedImages(prev => ({ ...prev, hero: true }))}
+                    />
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-stone-100 text-stone-500 p-6 text-center">
+                      <Utensils className="w-8 h-8 text-teal-700 mb-2" />
+                      <span className="text-xs font-semibold text-stone-700">
+                        {settings.restaurantName}
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
 
-      {/* Primary Guest Mode Navigation (Menu vs My Orders) */}
-      <nav aria-label="Guest Navigation" className="bg-white border-b border-stone-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6">
-          <div className="flex items-center gap-2 sm:gap-4">
+      {/* Menu & Orders Navigation Bar */}
+      <div
+        id="menu-section"
+        ref={menuSectionRef}
+        className="scroll-mt-16 bg-white border-b border-stone-200"
+      >
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex items-center justify-between gap-3">
+          <nav aria-label="Menu and Orders" className="flex items-center gap-1 sm:gap-3">
             <button
               type="button"
               onClick={() => setCustomerViewTab('menu')}
-              className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 py-3.5 px-4 text-xs sm:text-sm font-semibold border-b-2 transition-colors cursor-pointer min-h-[48px] whitespace-nowrap shrink-0 ${
+              className={`flex items-center justify-center gap-2 py-3.5 px-3 sm:px-4 text-xs sm:text-sm font-semibold border-b-2 transition-colors cursor-pointer min-h-[48px] whitespace-nowrap shrink-0 ${
                 customerViewTab === 'menu'
                   ? 'border-teal-700 text-teal-900 font-bold'
                   : 'border-transparent text-stone-600 hover:text-stone-900'
               }`}
             >
               <Utensils className="w-4 h-4 shrink-0" />
-              <span>Browse Menu</span>
+              <span>Menu</span>
             </button>
 
             <button
               type="button"
               onClick={() => setCustomerViewTab('orders')}
-              className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 py-3.5 px-4 text-xs sm:text-sm font-semibold border-b-2 transition-colors cursor-pointer min-h-[48px] whitespace-nowrap shrink-0 ${
+              className={`flex items-center justify-center gap-2 py-3.5 px-3 sm:px-4 text-xs sm:text-sm font-semibold border-b-2 transition-colors cursor-pointer min-h-[48px] whitespace-nowrap shrink-0 ${
                 customerViewTab === 'orders'
                   ? 'border-teal-700 text-teal-900 font-bold'
                   : 'border-transparent text-stone-600 hover:text-stone-900'
               }`}
             >
               <History className="w-4 h-4 shrink-0" />
-              <span>My Orders &amp; Status</span>
-              {trackedGuestOrders.length > 0 && (
+              <span>My Orders</span>
+              {trackedOrders.length > 0 && (
                 <span className="font-mono tabular-nums text-xs font-bold text-teal-800">
-                  ({activeCookingCount > 0 ? `${activeCookingCount} active` : trackedGuestOrders.length})
+                  ({activeCookingCount > 0 ? activeCookingCount : trackedOrders.length})
                 </span>
               )}
             </button>
-          </div>
+          </nav>
+
+          {cart.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setIsCartOpen(true)}
+              className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-teal-50 hover:bg-teal-100/80 border border-teal-200 text-teal-900 text-xs font-bold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ShoppingBag className="w-3.5 h-3.5 text-teal-800 shrink-0" />
+              <span>Cart ({totalCartCount})</span>
+            </button>
+          )}
         </div>
-      </nav>
+      </div>
 
       {customerViewTab === 'orders' ? (
         <PreviousOrdersView
           currentTable={isTableTokenValidated ? verifiedTable : null}
-          orders={trackedGuestOrders}
+          orders={trackedOrders}
           settings={settings}
           onOrderMore={() => setCustomerViewTab('menu')}
           onRefresh={onRefreshOrders}
@@ -504,10 +455,34 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
         />
       ) : (
         <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
-          {/* Active Order Reassurance Card (when guest has an order in progress) */}
+          {/* Table QR Prompt (only shown if customer visited an incomplete table link) */}
+          {hasUnverifiedTableAttempt && (
+            <div
+              role="alert"
+              className="flex flex-wrap items-center justify-between gap-3 bg-amber-50 border border-amber-200 text-amber-950 px-4 py-3 rounded-xl text-xs sm:text-sm"
+            >
+              <div className="flex items-center gap-2.5">
+                <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
+                <span>
+                  To order to <strong>{attemptedTableId}</strong>, scan the QR code on your table—or switch to Counter Pickup.
+                </span>
+              </div>
+              {onClearUnverifiedTable && (
+                <button
+                  type="button"
+                  onClick={onClearUnverifiedTable}
+                  className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-teal-700 hover:bg-teal-800 text-white font-bold text-xs transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  Switch to Counter Pickup
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Active Order Status Banner (only when customer has an order in progress) */}
           {activeOrders.length > 0 && (
             <section
-              aria-label="Active Order Status"
+              aria-label="Order Status"
               className="bg-white border border-teal-200 rounded-2xl p-4 sm:p-5 space-y-3 shadow-xs"
             >
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs sm:text-sm">
@@ -521,7 +496,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                   </span>
                   {activeOrders.length > 1 && (
                     <span className="text-stone-500 text-xs tabular-nums">
-                      (+{activeOrders.length - 1} more active)
+                      (+{activeOrders.length - 1} more)
                     </span>
                   )}
                 </div>
@@ -530,7 +505,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                   onClick={() => setCustomerViewTab('orders')}
                   className="min-h-[38px] px-3 py-1.5 rounded-lg bg-teal-50 hover:bg-teal-100/80 text-teal-900 font-bold flex items-center gap-1 shrink-0 transition-colors cursor-pointer self-start sm:self-auto text-xs whitespace-nowrap"
                 >
-                  <span>View Order Details ({trackedGuestOrders.length})</span>
+                  <span>View Details</span>
                   <ChevronRight className="w-3.5 h-3.5 shrink-0" />
                 </button>
               </div>
@@ -543,7 +518,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
             </section>
           )}
 
-          {/* Menu Discovery Controls (Search, Diet Filter & Category Strip) */}
+          {/* Search, Dietary Filter & Category Strip */}
           <section
             aria-label="Filter and search menu"
             className="bg-white border border-stone-200 rounded-2xl p-4 sm:p-5 space-y-4"
@@ -551,14 +526,14 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
               {/* Search Input */}
               <div className="relative flex-1">
-                <label htmlFor="guest-menu-search" className="sr-only">
+                <label htmlFor="menu-search" className="sr-only">
                   Search dishes or drinks
                 </label>
                 <Search className="w-4 h-4 text-stone-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
-                  id="guest-menu-search"
+                  id="menu-search"
                   type="text"
-                  placeholder="Search dishes, ingredients, or drinks (e.g. Momos, Datshi, Burger, Latte)..."
+                  placeholder="Search dishes or drinks..."
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
                   className="w-full min-h-[44px] pl-10 pr-16 py-2.5 text-sm bg-stone-50 border border-stone-200 rounded-xl text-stone-900 placeholder:text-stone-400 focus:bg-white focus:border-teal-700 transition-colors"
@@ -589,7 +564,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                       : 'text-stone-600 hover:text-stone-900'
                   }`}
                 >
-                  All Dishes
+                  All
                 </button>
                 <button
                   type="button"
@@ -628,7 +603,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                     : 'bg-stone-50 border border-stone-200 text-stone-700 hover:bg-stone-100 hover:text-stone-900'
                 }`}
               >
-                All Categories ({menuItems.length})
+                All ({menuItems.length})
               </button>
               {categories.map(cat => {
                 const count = menuItems.filter(m => m.categoryId === cat.id).length;
@@ -657,10 +632,10 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
               <AlertCircle className="w-9 h-9 text-stone-400 mx-auto" />
               <div className="space-y-1">
                 <h3 className="text-base font-bold text-stone-900 font-display">
-                  No matching dishes found
+                  No matching items found
                 </h3>
                 <p className="text-xs sm:text-sm text-stone-600">
-                  Try clearing your search term or selecting a different category or dietary preference.
+                  Try clearing your search or choosing another category.
                 </p>
               </div>
               <button
@@ -672,11 +647,11 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                 }}
                 className="min-h-[44px] px-4 py-2.5 text-xs sm:text-sm font-semibold text-stone-800 bg-stone-100 rounded-xl hover:bg-stone-200 transition-colors cursor-pointer"
               >
-                Reset All Filters
+                Show All Items
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {filteredItems.map(item => {
                 const isUnavailable = item.soldOut || !item.isAvailable;
                 const imgFailed = failedImages[item.id];
@@ -712,13 +687,13 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                         {isUnavailable && (
                           <div className="absolute inset-0 bg-stone-900/55 flex items-center justify-center">
                             <span className="bg-white text-stone-900 font-bold text-xs px-3 py-1.5 rounded-lg shadow-xs">
-                              Currently Sold Out
+                              Sold Out
                             </span>
                           </div>
                         )}
                       </div>
 
-                      {/* Dish Details (Clean Unboxed Metadata) */}
+                      {/* Dish Details */}
                       <div className="p-4 sm:p-5 space-y-2">
                         {catName && (
                           <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-500 block">
@@ -763,12 +738,6 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                               <span>Contains {item.allergens.join(', ')}</span>
                             </>
                           )}
-                          {item.customizationGroups.length > 0 && (
-                            <>
-                              <span aria-hidden="true">·</span>
-                              <span className="text-teal-800 font-medium">Customizable</span>
-                            </>
-                          )}
                         </div>
                       </div>
                     </div>
@@ -788,7 +757,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                         <Plus className="w-4 h-4 shrink-0" />
                         <span>
                           {isUnavailable
-                            ? 'Unavailable'
+                            ? 'Sold Out'
                             : item.customizationGroups.length > 0
                             ? 'Customize & Add'
                             : 'Add to Order'}
@@ -803,46 +772,20 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
         </main>
       )}
 
-      {/* Isolated Customer Footer */}
-      <footer className="mt-16 border-t border-stone-200 py-10 bg-white text-stone-500 text-xs text-center space-y-3 px-4">
-        <div className="max-w-md mx-auto space-y-1">
+      {/* Simple Café Footer */}
+      <footer className="mt-16 border-t border-stone-200 py-8 bg-white text-stone-500 text-xs text-center px-4">
+        <div className="max-w-xl mx-auto space-y-1">
           <p className="font-bold text-stone-900 text-sm font-display">{settings.restaurantName}</p>
-          <p className="text-xs text-stone-600">{settings.tagline || 'Paro, Bhutan · Open 24/7'}</p>
-          <p className="text-xs text-stone-500">{settings.address}</p>
-        </div>
-
-        <div className="pt-2 flex flex-wrap items-center justify-center gap-3 text-xs">
-          {isTableTokenValidated && verifiedTable ? (
-            <span className="text-stone-600">
-              Private table session for <strong>{verifiedTable.tableNumber}</strong> ({verifiedTable.section})
-            </span>
-          ) : (
-            <span className="text-stone-600">Private Counter Pickup &amp; Table QR Ordering</span>
-          )}
-          <span aria-hidden="true">·</span>
-          <button
-            type="button"
-            onClick={() => setIsPrivacyModalOpen(true)}
-            className="text-stone-700 hover:text-teal-800 underline underline-offset-4 font-medium cursor-pointer"
-          >
-            Privacy &amp; Anonymity Policy
-          </button>
-          <span aria-hidden="true">·</span>
-          <a
-            href="/assets/aistudio/paro_menu_final__Recovered__13981981.pdf"
-            target="_blank"
-            rel="noreferrer"
-            className="text-stone-700 hover:text-teal-800 underline underline-offset-4 font-medium"
-          >
-            Printed PDF Menu
-          </a>
+          <p className="text-xs text-stone-500">
+            {settings.address} · Open 24/7
+          </p>
         </div>
       </footer>
 
       {/* Bottom Sticky Cart Summary Bar */}
       {cart.length > 0 && (
         <aside
-          aria-label="Current order summary"
+          aria-label="Order summary"
           className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-stone-200 shadow-lg p-3 sm:p-4 pb-safe"
         >
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
@@ -854,9 +797,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                 </span>
               </div>
               <div className="min-w-0">
-                <div className="text-xs text-stone-500 truncate">
-                  {activeDestinationLabel} · Private Order
-                </div>
+                <div className="text-xs text-stone-500 truncate">{activeDestinationLabel}</div>
                 {settings.showPricesOnCustomerMenu ? (
                   <div className="text-sm sm:text-base font-extrabold text-stone-900 font-mono tabular-nums">
                     Nu. {cartTotal}{' '}
@@ -866,7 +807,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                   </div>
                 ) : (
                   <div className="text-sm font-bold text-stone-900 truncate tabular-nums">
-                    {totalCartCount} {totalCartCount > 1 ? 'items selected' : 'item selected'}
+                    {totalCartCount} {totalCartCount > 1 ? 'items' : 'item'}
                   </div>
                 )}
               </div>
@@ -877,7 +818,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
               onClick={() => setIsCartOpen(true)}
               className="min-h-[46px] px-4 sm:px-5 py-2.5 bg-teal-700 hover:bg-teal-800 text-white text-xs sm:text-sm font-bold rounded-xl transition-colors flex items-center gap-2 whitespace-nowrap cursor-pointer shrink-0"
             >
-              <span>Review &amp; Place Order</span>
+              <span>View Cart</span>
               <ArrowRight className="w-4 h-4 shrink-0" />
             </button>
           </div>
@@ -1003,7 +944,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                   htmlFor="item-special-instructions"
                   className="text-xs sm:text-sm font-bold text-stone-800 block"
                 >
-                  Preparation Note (Optional)
+                  Special Instructions (Optional)
                 </label>
                 <input
                   id="item-special-instructions"
@@ -1052,9 +993,9 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                   </>
                 ) : (
                   <>
-                    <div className="text-xs text-stone-500">Selected</div>
+                    <div className="text-xs text-stone-500">Quantity</div>
                     <div className="text-sm font-bold text-stone-900 tabular-nums">
-                      {modalQuantity} {modalQuantity > 1 ? 'portions' : 'portion'}
+                      {modalQuantity} {modalQuantity > 1 ? 'items' : 'item'}
                     </div>
                   </>
                 )}
@@ -1064,14 +1005,14 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                 onClick={handleAddToCart}
                 className="min-h-[46px] px-5 sm:px-6 py-3 bg-teal-700 hover:bg-teal-800 text-white text-xs sm:text-sm font-bold rounded-xl transition-colors whitespace-nowrap cursor-pointer"
               >
-                Add {modalQuantity} to Order
+                Add to Cart
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Cart Review Drawer */}
+      {/* Cart & Checkout Drawer */}
       {isCartOpen && (
         <div className="fixed inset-0 z-50 bg-stone-900/50 backdrop-blur-xs flex justify-end">
           <div
@@ -1084,23 +1025,21 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
             <div className="p-4 sm:p-5 border-b border-stone-200 flex items-center justify-between gap-3">
               <div>
                 <h2 id="cart-drawer-title" className="text-lg font-bold text-stone-900 font-display">
-                  Review Your Order
+                  Your Cart
                 </h2>
-                <p className="text-xs text-stone-500">
-                  {activeDestinationLabel} · {activeDestinationSubtitle}
-                </p>
+                <p className="text-xs text-stone-500">{activeDestinationDetail}</p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsCartOpen(false)}
                 className="w-10 h-10 rounded-xl hover:bg-stone-100 flex items-center justify-center text-stone-500 hover:text-stone-800 cursor-pointer shrink-0"
-                aria-label="Close order review drawer"
+                aria-label="Close cart"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Itemized Cart List (Single-Elevation Hairline Dividers) */}
+            {/* Itemized Cart List */}
             <div className="p-4 sm:p-5 flex-1 overflow-y-auto space-y-5">
               <div className="divide-y divide-stone-200">
                 {cart.map(item => (
@@ -1181,18 +1120,18 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                 ))}
               </div>
 
-              {/* Optional Kitchen Note */}
+              {/* Optional Order Note */}
               <div className="pt-3 border-t border-stone-200 space-y-1.5">
                 <label
                   htmlFor="order-kitchen-note"
                   className="text-xs sm:text-sm font-bold text-stone-800 block"
                 >
-                  Kitchen Preparation Note (Optional)
+                  Order Note (Optional)
                 </label>
                 <input
                   id="order-kitchen-note"
                   type="text"
-                  placeholder="e.g. Serve drinks first, extra napkins (no name needed)..."
+                  placeholder="e.g. Serve drinks first, extra napkins..."
                   value={customerNote}
                   onChange={e => setCustomerNote(e.target.value)}
                   className="w-full text-sm min-h-[44px] px-3.5 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:border-teal-700 transition-colors"
@@ -1215,31 +1154,18 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                     <span className="font-mono tabular-nums text-stone-900">Nu. {salesTax}</span>
                   </div>
                   <div className="border-t border-stone-200 pt-2 flex justify-between font-bold text-stone-900 text-sm sm:text-base">
-                    <span>Total Amount</span>
+                    <span>Total</span>
                     <span className="font-mono tabular-nums">Nu. {cartTotal}</span>
                   </div>
                 </div>
               ) : (
-                <div className="bg-stone-50 border border-stone-200 rounded-xl p-4 space-y-2 text-xs text-stone-600">
-                  <div className="flex justify-between font-semibold text-stone-900 text-sm">
-                    <span>Items Selected</span>
-                    <span className="font-bold font-mono tabular-nums">
-                      {totalCartCount} {totalCartCount > 1 ? 'items' : 'item'}
-                    </span>
-                  </div>
-                  <p className="text-xs text-stone-500 pt-1.5 border-t border-stone-200 leading-relaxed">
-                    Your order goes straight to the kitchen with a unique Confirmation ID. Payment is settled at the counter when you&apos;re ready.
-                  </p>
+                <div className="bg-stone-50 border border-stone-200 rounded-xl p-4 flex justify-between font-semibold text-stone-900 text-sm">
+                  <span>Items Selected</span>
+                  <span className="font-bold font-mono tabular-nums">
+                    {totalCartCount} {totalCartCount > 1 ? 'items' : 'item'}
+                  </span>
                 </div>
               )}
-
-              {/* Anonymity Assurance */}
-              <div className="p-3.5 bg-teal-50/70 border border-teal-200/80 text-teal-950 text-xs rounded-xl flex items-start gap-2.5 leading-relaxed">
-                <ShieldCheck className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
-                <span>
-                  <strong>Private &amp; Anonymous:</strong> No name, phone number, or account is requested. Only your selected dishes and a random Confirmation ID are recorded.
-                </span>
-              </div>
 
               {hasUnverifiedTableAttempt && (
                 <div
@@ -1249,7 +1175,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                   <div className="flex items-start gap-2">
                     <Info className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
                     <span>
-                      Table <strong>{attemptedTableId}</strong> requires scanning the QR stand on that table, or you can switch to Counter Pickup.
+                      To send this order to <strong>{attemptedTableId}</strong>, scan the QR code on your table—or switch to Counter Pickup.
                     </span>
                   </div>
                   {onClearUnverifiedTable && (
@@ -1276,35 +1202,34 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
             </div>
 
             {/* Drawer Submit Footer */}
-            <div className="p-4 sm:p-5 border-t border-stone-200 bg-stone-50 space-y-2 pb-safe">
+            <div className="p-4 sm:p-5 border-t border-stone-200 bg-stone-50 pb-safe">
               <button
                 type="button"
                 onClick={handleConfirmOrder}
-                disabled={isSubmitting || cart.length === 0 || !canPlaceAnonymousOrder}
+                disabled={isSubmitting || cart.length === 0 || !canPlaceOrder}
                 className={`w-full py-3.5 px-4 rounded-xl text-sm font-bold text-white transition-colors flex items-center justify-center gap-2 min-h-[48px] ${
-                  isSubmitting || !canPlaceAnonymousOrder
+                  isSubmitting || !canPlaceOrder
                     ? 'bg-stone-300 text-stone-500 cursor-not-allowed'
                     : 'bg-teal-700 hover:bg-teal-800 cursor-pointer'
                 }`}
               >
                 {isSubmitting ? (
-                  <span>Sending Order to Kitchen...</span>
-                ) : canPlaceAnonymousOrder ? (
+                  <span>Placing Order...</span>
+                ) : canPlaceOrder ? (
                   <>
                     <CheckCircle2 className="w-4 h-4 shrink-0" />
                     <span>
                       {isTableTokenValidated && verifiedTable
-                        ? `Place Order for ${verifiedTable.tableNumber}`
-                        : 'Place Counter Pickup Order'}
+                        ? `Place Order · ${verifiedTable.tableNumber}`
+                        : settings.showPricesOnCustomerMenu
+                        ? `Place Order · Nu. ${cartTotal}`
+                        : 'Place Order'}
                     </span>
                   </>
                 ) : (
-                  <span>Verify Table QR or Switch to Pickup</span>
+                  <span>Scan Table QR or Switch to Pickup</span>
                 )}
               </button>
-              <p className="text-xs text-center text-stone-500">
-                You will receive a unique Order Confirmation ID immediately.
-              </p>
             </div>
           </div>
         </div>
@@ -1323,15 +1248,13 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
               <div className="w-12 h-12 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-2xl flex items-center justify-center mx-auto">
                 <CheckCircle2 className="w-6 h-6" />
               </div>
-              <p id="order-confirmed-title" className="text-sm font-bold text-emerald-800">
-                Order Sent to Kitchen
+              <p id="order-confirmed-title" className="text-base font-bold text-stone-900 font-display">
+                Order Confirmed
               </p>
 
-              {/* Unique Order Confirmation Box */}
+              {/* Order Number Box */}
               <div className="bg-stone-50 border border-stone-200 rounded-xl p-4 space-y-2">
-                <span className="text-xs text-stone-500 block">
-                  Your Order Confirmation Number
-                </span>
+                <span className="text-xs text-stone-500 block">Order Number</span>
                 <div className="flex items-center justify-center gap-2.5">
                   <span className="text-xl sm:text-2xl font-extrabold text-stone-900 font-mono tabular-nums tracking-tight">
                     {submittedOrder.orderNumber}
@@ -1356,8 +1279,8 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                 </div>
                 <p className="text-xs text-stone-600">
                   {submittedOrder.tableId === 'TAKEAWAY'
-                    ? 'Show this Confirmation ID at the counter when your order is ready.'
-                    : `Linked to ${submittedOrder.tableNumber || activeDestinationLabel} · Round #${submittedOrder.roundNumber}`}
+                    ? 'Show this order number at the counter when picking up.'
+                    : `${getSubmittedDestinationLabel(submittedOrder)} · Round #${submittedOrder.roundNumber}`}
                 </p>
               </div>
             </div>
@@ -1408,93 +1331,14 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                 className="w-full min-h-[46px] py-3 px-4 bg-teal-700 hover:bg-teal-800 text-white rounded-xl text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-2 cursor-pointer"
               >
                 <History className="w-4 h-4 shrink-0" />
-                <span>Track Live Order Status</span>
+                <span>Track Order Status</span>
               </button>
               <button
                 type="button"
                 onClick={() => setSubmittedOrder(null)}
                 className="w-full min-h-[44px] py-2.5 px-4 bg-stone-100 hover:bg-stone-200 text-stone-800 rounded-xl text-xs sm:text-sm font-semibold transition-colors cursor-pointer"
               >
-                Continue Browsing Menu
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Privacy & Data Transparency Modal */}
-      {isPrivacyModalOpen && (
-        <div className="fixed inset-0 z-50 bg-stone-900/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="privacy-modal-title"
-            className="bg-white rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-xl border border-stone-200 space-y-4 my-auto"
-          >
-            <div className="flex items-start justify-between gap-3 border-b border-stone-100 pb-3.5">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-teal-50 text-teal-800 border border-teal-200/80 flex items-center justify-center shrink-0">
-                  <ShieldCheck className="w-5 h-5" />
-                </div>
-                <div>
-                  <h2
-                    id="privacy-modal-title"
-                    className="text-base sm:text-lg font-bold text-stone-900 font-display"
-                  >
-                    Anonymous Ordering &amp; Privacy
-                  </h2>
-                  <p className="text-xs text-stone-500">
-                    How your anonymity and order records are protected
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsPrivacyModalOpen(false)}
-                className="w-10 h-10 rounded-xl hover:bg-stone-100 flex items-center justify-center text-stone-500 cursor-pointer shrink-0"
-                aria-label="Close privacy dialog"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="space-y-3.5 text-xs sm:text-sm text-stone-600 leading-relaxed">
-              <div className="space-y-1">
-                <h3 className="font-bold text-stone-900">1. Zero Personal Identity Required</h3>
-                <p>
-                  Browse the menu and place orders without entering your real name, email address, phone number, or creating an account. Every order is identified strictly by a random Confirmation ID (such as <span className="font-mono text-stone-800">#HQC-ANON-4821</span>).
-                </p>
-              </div>
-
-              <div className="space-y-1">
-                <h3 className="font-bold text-stone-900">2. Minimal Information Collected</h3>
-                <p>
-                  We record only what the kitchen needs to prepare your meal: selected dishes, quantities, dietary customizations, optional preparation notes, table number (if scanned via QR) or pickup mode, and order time.
-                </p>
-              </div>
-
-              <div className="space-y-1">
-                <h3 className="font-bold text-stone-900">3. Private Device Tracking</h3>
-                <p>
-                  A private tracking token is stored locally in your browser so only your phone can follow live preparation updates. Other guests cannot view or modify your orders, and you can clear your local history anytime under <strong>My Orders &amp; Status</strong>.
-                </p>
-              </div>
-
-              <div className="space-y-1">
-                <h3 className="font-bold text-stone-900">4. Confidential Order Archives</h3>
-                <p>
-                  Completed order records are stored confidentially for café operations and accounting, restricted on the server exclusively to authorized <strong>General Manager</strong> and <strong>Admin</strong> staff.
-                </p>
-              </div>
-            </div>
-
-            <div className="pt-2 border-t border-stone-100 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setIsPrivacyModalOpen(false)}
-                className="min-h-[44px] px-5 py-2.5 bg-teal-700 hover:bg-teal-800 text-white rounded-xl text-xs sm:text-sm font-bold transition-colors cursor-pointer"
-              >
-                Done
+                Back to Menu
               </button>
             </div>
           </div>
