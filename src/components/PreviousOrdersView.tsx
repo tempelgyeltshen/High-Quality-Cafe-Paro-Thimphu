@@ -316,7 +316,15 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
                             <span className="font-mono tabular-nums font-bold text-stone-900">
                               {item.quantity}×
                             </span>
-                            <span className="font-semibold text-stone-900">{item.name}</span>
+                            <span
+                              className={
+                                item.kitchenStatus === 'cannot_prepare'
+                                  ? 'line-through text-stone-400 font-semibold'
+                                  : 'font-semibold text-stone-900'
+                              }
+                            >
+                              {item.name}
+                            </span>
                           </div>
 
                           {item.customizations.length > 0 && (
@@ -341,8 +349,17 @@ export const PreviousOrdersView: React.FC<PreviousOrdersViewProps> = ({
                         <div className="text-right shrink-0 space-y-0.5">
                           <div>{getItemKitchenStatusText(item.kitchenStatus)}</div>
                           {settings.showPricesOnCustomerMenu && (
-                            <div className="font-mono tabular-nums text-stone-900 font-bold text-xs">
-                              Nu. {item.unitPrice * item.quantity}
+                            <div
+                              className={`font-mono tabular-nums font-bold text-xs ${
+                                item.kitchenStatus === 'cannot_prepare'
+                                  ? 'line-through text-stone-400'
+                                  : 'text-stone-900'
+                              }`}
+                            >
+                              Nu.{' '}
+                              {item.kitchenStatus === 'cannot_prepare'
+                                ? 0
+                                : Math.round(item.unitPrice * item.quantity * 100) / 100}
                             </div>
                           )}
                         </div>

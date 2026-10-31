@@ -423,7 +423,7 @@ export default function App() {
         setLiveOrderSignal(s => s + 1);
         if (data.bill) {
           setBills(prev => {
-            if (currentUser.role === 'cashier' && data.bill.status === 'paid') {
+            if (currentUser.role === 'cashier' && data.bill.status === 'paid' && data.bill.closedAt) {
               return prev.filter(b => b.id !== data.bill.id);
             }
             return prev.map(b => (b.id === data.bill.id ? data.bill : b));
@@ -434,6 +434,11 @@ export default function App() {
         setTables(prev =>
           prev.map(t => (t.id === data.tableId ? { ...t, status: 'available', currentSessionId: null } : t))
         );
+        if (currentUser.role === 'cashier' && data.sessionId) {
+          setBills(prev => prev.filter(b => b.sessionId !== data.sessionId));
+        } else if (data.bill) {
+          setBills(prev => prev.map(b => (b.id === data.bill.id ? data.bill : b)));
+        }
       } else if (event === 'tables_updated' && data.table) {
         setTables(prev => {
           const idx = prev.findIndex(t => t.id === data.table.id);
@@ -648,7 +653,7 @@ export default function App() {
   ) => {
     const res = await api.recordPayment(billId, payment);
     setBills(prev => {
-      if (currentUser?.role === 'cashier' && res.bill.status === 'paid') {
+      if (currentUser?.role === 'cashier' && res.bill.status === 'paid' && res.bill.closedAt) {
         return prev.filter(b => b.id !== billId);
       }
       return prev.map(b => (b.id === billId ? res.bill : b));

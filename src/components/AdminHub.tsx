@@ -85,7 +85,7 @@ export const AdminHub: React.FC<AdminHubProps> = ({
   const [hubNotice, setHubNotice] = useState<{ type: 'error' | 'success'; message: string } | null>(null);
   const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
   const [pendingDelete, setPendingDelete] = useState<{
-    kind: 'staff' | 'table' | 'dish';
+    kind: 'staff' | 'dish';
     id: string;
     label: string;
   } | null>(null);
@@ -93,10 +93,6 @@ export const AdminHub: React.FC<AdminHubProps> = ({
   const [staffUsers, setStaffUsers] = useState<StaffUser[]>([]);
   const [editingStaff, setEditingStaff] = useState<Partial<StaffUser> | null>(null);
   const [staffError, setStaffError] = useState<string | null>(null);
-
-  const [tablesWithQR, setTablesWithQR] = useState<Array<RestaurantTable & { qrUrl: string; qrCodeDataUrl: string }>>([]);
-  const [editingTable, setEditingTable] = useState<Partial<RestaurantTable> | null>(null);
-  const [tableError, setTableError] = useState<string | null>(null);
 
   const [editingItem, setEditingItem] = useState<Partial<MenuItem> | null>(null);
   const [saveDishError, setSaveDishError] = useState<string | null>(null);
@@ -110,7 +106,6 @@ export const AdminHub: React.FC<AdminHubProps> = ({
   useEffect(() => {
     loadReports();
     loadAudits();
-    loadTables();
     if (isAdmin) {
       loadStaff();
     }
@@ -146,15 +141,6 @@ export const AdminHub: React.FC<AdminHubProps> = ({
     }
   };
 
-  const loadTables = async () => {
-    try {
-      const data = await api.getTablesWithQR();
-      setTablesWithQR(data);
-    } catch (e) {
-      console.error('Failed to load tables with QR', e);
-    }
-  };
-
   const openNewDish = () => {
     setSaveDishError(null);
     setEditingItem({
@@ -167,7 +153,7 @@ export const AdminHub: React.FC<AdminHubProps> = ({
       isAvailable: true,
       soldOut: false,
       allergens: [],
-      imageUrl: '/src/assets/images/hero_cafe_ambiance_1792466932618.jpg',
+      imageUrl: '/src/assets/images/hero_signature_food_1793252236494.jpg',
       preparationTimeMinutes: 12,
       timeSlot: 'all_day',
       customizationGroups: []
@@ -233,11 +219,6 @@ export const AdminHub: React.FC<AdminHubProps> = ({
         await loadStaff();
         onRefreshData?.();
         setHubNotice({ type: 'success', message: `Deleted staff account "${target.label}".` });
-      } else if (target.kind === 'table') {
-        await api.deleteAdminTable(target.id);
-        await loadTables();
-        onRefreshData?.();
-        setHubNotice({ type: 'success', message: `Deleted table "${target.label}".` });
       } else if (target.kind === 'dish') {
         await onDeleteMenuItem(target.id);
         setHubNotice({ type: 'success', message: `Deleted dish "${target.label}".` });
@@ -247,23 +228,6 @@ export const AdminHub: React.FC<AdminHubProps> = ({
         type: 'error',
         message: err.message || `Failed to delete ${target.label}`
       });
-    }
-  };
-
-  const handleSaveTable = async () => {
-    if (!editingTable) return;
-    if (!editingTable.tableNumber || editingTable.tableNumber.trim().length === 0) {
-      setTableError('Table number or name is required.');
-      return;
-    }
-    try {
-      setTableError(null);
-      await api.saveAdminTable(editingTable);
-      setEditingTable(null);
-      await loadTables();
-      onRefreshData?.();
-    } catch (err: any) {
-      setTableError(err.message || 'Failed to save table');
     }
   };
 
@@ -954,20 +918,17 @@ export const AdminHub: React.FC<AdminHubProps> = ({
               {auditLogs.generalLogs.length === 0 ? (
                 <div className="text-stone-500 py-10 text-center">No operational logs recorded yet.</div>
               ) : (
-                auditLogs.generalLogs
-                  .slice()
-                  .reverse()
-                  .map((log: any) => (
-                    <div key={log.id} className="px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-stone-50/60">
-                      <div className="space-y-0.5">
-                        <span className="font-mono font-bold text-teal-900 mr-2">[{log.action}]</span>
-                        <span className="text-stone-700">{log.details}</span>
-                      </div>
-                      <div className="text-stone-500 font-mono tabular-nums text-[11px] shrink-0">
-                        {log.performedBy || log.staffName || 'System'} · {new Date(log.timestamp).toLocaleTimeString()}
-                      </div>
+                auditLogs.generalLogs.map((log: any) => (
+                  <div key={log.id} className="px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-stone-50/60">
+                    <div className="space-y-0.5">
+                      <span className="font-mono font-bold text-teal-900 mr-2">[{log.action}]</span>
+                      <span className="text-stone-700">{log.details}</span>
                     </div>
-                  ))
+                    <div className="text-stone-500 font-mono tabular-nums text-[11px] shrink-0">
+                      {log.performedBy || log.staffName || 'System'} · {new Date(log.timestamp).toLocaleTimeString()}
+                    </div>
+                  </div>
+                ))
               )}
             </div>
           </div>
@@ -1424,103 +1385,6 @@ export const AdminHub: React.FC<AdminHubProps> = ({
                 className="min-h-[44px] px-5 py-2 text-xs font-bold bg-teal-700 hover:bg-teal-800 text-white rounded-xl transition-colors cursor-pointer"
               >
                 Save Staff Account
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Table Modal */}
-      {editingTable && (
-        <div className="fixed inset-0 z-50 bg-stone-950/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-stone-200 space-y-4">
-            <div className="flex items-center justify-between border-b border-stone-100 pb-3">
-              <h3 className="text-base font-bold text-stone-900 font-display">
-                {editingTable.id && tablesWithQR.some(t => t.id === editingTable.id) ? 'Edit Dining Table' : 'Add Dining Table'}
-              </h3>
-              <button
-                type="button"
-                aria-label="Close table dialog"
-                onClick={() => setEditingTable(null)}
-                className="w-9 h-9 rounded-lg hover:bg-stone-100 flex items-center justify-center text-stone-500 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {tableError && (
-              <div role="alert" className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
-                <span>{tableError}</span>
-              </div>
-            )}
-
-            <div className="space-y-3.5 text-xs">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label htmlFor="admin-table-id" className="font-semibold text-stone-700 block">Table ID / Code</label>
-                  <input
-                    id="admin-table-id"
-                    type="text"
-                    value={editingTable.id || ''}
-                    onChange={(e) => setEditingTable(prev => ({ ...prev, id: e.target.value.toUpperCase() }))}
-                    placeholder="e.g. T09"
-                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl font-mono focus:bg-white focus:outline-none focus:border-teal-700"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label htmlFor="admin-table-name" className="font-semibold text-stone-700 block">Table Name</label>
-                  <input
-                    id="admin-table-name"
-                    type="text"
-                    value={editingTable.tableNumber || ''}
-                    onChange={(e) => setEditingTable(prev => ({ ...prev, tableNumber: e.target.value }))}
-                    placeholder="e.g. Table 9"
-                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label htmlFor="admin-table-section" className="font-semibold text-stone-700 block">Section</label>
-                  <input
-                    id="admin-table-section"
-                    type="text"
-                    value={editingTable.section || ''}
-                    onChange={(e) => setEditingTable(prev => ({ ...prev, section: e.target.value }))}
-                    placeholder="e.g. Main Hall"
-                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl focus:bg-white focus:outline-none focus:border-teal-700"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label htmlFor="admin-table-capacity" className="font-semibold text-stone-700 block">Guest Capacity</label>
-                  <input
-                    id="admin-table-capacity"
-                    type="number"
-                    min={0}
-                    value={editingTable.capacity || 2}
-                    onChange={(e) => setEditingTable(prev => ({ ...prev, capacity: Number(e.target.value) }))}
-                    className="w-full min-h-[44px] px-3.5 py-2 bg-stone-50 border border-stone-200 rounded-xl font-mono tabular-nums focus:bg-white focus:outline-none focus:border-teal-700"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-3 border-t border-stone-100 flex justify-end gap-2.5">
-              <button
-                type="button"
-                onClick={() => setEditingTable(null)}
-                className="min-h-[44px] px-4 py-2 text-xs font-semibold text-stone-600 hover:text-stone-900 rounded-xl hover:bg-stone-100 cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveTable}
-                className="min-h-[44px] px-5 py-2 text-xs font-bold bg-teal-700 hover:bg-teal-800 text-white rounded-xl transition-colors cursor-pointer"
-              >
-                Save Table
               </button>
             </div>
           </div>

@@ -49,9 +49,9 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 function getInitialSeedData(): DatabaseSchema {
-  const categories: MenuCategory[] = officialCategories;
+  const categories: MenuCategory[] = structuredClone(officialCategories);
 
-  const menuItems: MenuItem[] = officialMenuItems;
+  const menuItems: MenuItem[] = structuredClone(officialMenuItems);
 
   const tables: RestaurantTable[] = [
     { id: 'T01', tableNumber: 'Table 1', capacity: 2, section: 'Window Terrace', status: 'available', tableToken: 'tok_t01_hqc9812' },
@@ -111,12 +111,20 @@ function getInitialSeedData(): DatabaseSchema {
   };
 }
 
-class CafeDatabase {
+export class CafeDatabase {
   private data: DatabaseSchema;
+  private dbFile: string;
+  private tmpFile: string;
   private orderSeq = 0;
   private billSeq = 0;
 
-  constructor() {
+  constructor(customDbFile: string = DB_FILE) {
+    this.dbFile = customDbFile;
+    this.tmpFile = `${customDbFile}.tmp`;
+    const dir = path.dirname(this.dbFile);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
     this.data = this.load();
   }
 
@@ -160,14 +168,14 @@ class CafeDatabase {
 
   private load(): DatabaseSchema {
     try {
-      if (fs.existsSync(DB_FILE)) {
-        const raw = fs.readFileSync(DB_FILE, 'utf-8');
+      if (fs.existsSync(this.dbFile)) {
+        const raw = fs.readFileSync(this.dbFile, 'utf-8');
         const parsed = JSON.parse(raw);
         // Verify schema sanity and ensure official High Quality Cafe menu from PDF is loaded
         const hasOfficialMenu = parsed.categories?.some((c: any) => c.id === 'cat_starter') && parsed.menuItems?.length >= 50;
         if (parsed.menuItems && parsed.tables && parsed.settings && hasOfficialMenu) {
           if (parsed.settings.showPricesOnCustomerMenu === undefined) {
-            parsed.settings.showPricesOnCustomerMenu = false;
+            parsed.settings.showPricesOnCustomerMenu = true;
           }
           // Ensure every table has a unique cryptographic tableToken and role labels distinguish GM vs Admin
           let hasSchemaUpdates = false;
@@ -219,8 +227,8 @@ class CafeDatabase {
     const data = dataToSave || this.data;
     try {
       // Atomic write: write to temp file then rename
-      fs.writeFileSync(TMP_FILE, JSON.stringify(data, null, 2), 'utf-8');
-      fs.renameSync(TMP_FILE, DB_FILE);
+      fs.writeFileSync(this.tmpFile, JSON.stringify(data, null, 2), 'utf-8');
+      fs.renameSync(this.tmpFile, this.dbFile);
     } catch (err) {
       console.error('CRITICAL: Failed to persist cafe database to disk:', err);
     }
@@ -557,8 +565,8 @@ class CafeDatabase {
       name: item.name.trim(),
       description: item.description?.trim() || '',
       price: Math.round(item.price * 100) / 100,
-      customizationGroups: item.customizationGroups || [],
-      allergens: item.allergens || []
+      customizationGroups: structuredClone(item.customizationGroups || []),
+      allergens: [...(item.allergens || [])]
     };
 
     const existingIndex = this.data.menuItems.findIndex(m => m.id === sanitizedItem.id);
@@ -1129,13 +1137,25 @@ class CafeDatabase {
     order.updatedAt = new Date().toISOString();
 
     // Check if entire order ticket status should progress
-    const allReady = order.items.every(i => i.kitchenStatus === 'ready' || i.kitchenStatus === 'cannot_prepare');
+    const allCannotPrepare =
+      order.items.length > 0 && order.items.every(i => i.kitchenStatus === 'cannot_prepare');
+    const allTerminal = order.items.every(
+      i => i.kitchenStatus === 'ready' || i.kitchenStatus === 'cannot_prepare'
+    );
+    const anyReady = order.items.some(i => i.kitchenStatus === 'ready');
     const anyPreparing = order.items.some(i => i.kitchenStatus === 'preparing');
 
-    if (allReady) {
+    if (allCannotPrepare) {
+      order.status = 'cancelled';
+    } else if (allTerminal && anyReady) {
       order.status = 'ready';
     } else if (anyPreparing) {
       order.status = 'preparing';
+    }
+
+    const session = this.getSession(order.sessionId);
+    if (session?.billId) {
+      this.recalculateBill(session.billId);
     }
 
     this.addAuditLog('KITCHEN_ITEM_UPDATE', 'order', `Item ${item.name} in ${order.orderNumber} marked as ${status}${rejectionReason ? ` (${rejectionReason})` : ''}`, staffName);
@@ -1349,7 +1369,16 @@ class CafeDatabase {
     this.recalculateBill(billId);
 
     if (bill.status === 'paid') {
-      bill.paidAt = new Date().toISOString();
+      const settledAt = new Date().toISOString();
+      bill.paidAt = settledAt;
+      if (bill.tableId === 'TAKEAWAY') {
+        bill.closedAt = settledAt;
+        const takeawaySession = this.getSession(bill.sessionId);
+        if (takeawaySession) {
+          takeawaySession.status = 'closed';
+          takeawaySession.closedAt = settledAt;
+        }
+      }
       this.addAuditLog('BILL_SETTLED', 'payment', `Bill ${bill.billNumber} fully settled with payment Nu. ${recordedAmount} (${method}). Balance: Nu. 0`, staffName);
     } else {
       this.addAuditLog('PARTIAL_PAYMENT', 'payment', `Partial payment Nu. ${recordedAmount} (${method}) recorded for Bill ${bill.billNumber}. Remaining balance: Nu. ${bill.balanceDue}`, staffName);

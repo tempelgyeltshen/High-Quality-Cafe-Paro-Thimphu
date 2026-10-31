@@ -100,20 +100,30 @@ export const CounterConsole: React.FC<CounterConsoleProps> = ({
       .filter(Boolean) as OrderRound[];
   }, [currentBill, orders]);
 
+  const isStaffManagerOrAdmin = currentUser?.role === 'manager' || currentUser?.role === 'admin';
+
   // Filtered bills list
   const filteredBills = useMemo(() => {
     return bills.filter(b => {
-      if (billFilter === 'open' && b.status === 'paid') return false;
-      if (billFilter === 'paid' && b.status !== 'paid') return false;
+      if (isStaffManagerOrAdmin) {
+        if (billFilter === 'open' && b.status === 'paid' && Boolean(b.closedAt)) return false;
+        if (billFilter === 'paid' && b.status !== 'paid') return false;
+      } else {
+        // Cashier sees all active bills (unpaid bills + paid dine-in bills awaiting session close)
+        if (b.status === 'paid' && Boolean(b.closedAt)) return false;
+      }
       if (searchTable.trim()) {
         const q = searchTable.toLowerCase();
         return b.tableNumber.toLowerCase().includes(q) || b.billNumber.toLowerCase().includes(q);
       }
       return true;
     });
-  }, [bills, billFilter, searchTable]);
+  }, [bills, billFilter, searchTable, isStaffManagerOrAdmin]);
 
-  const openBillsCount = useMemo(() => bills.filter(b => b.status !== 'paid').length, [bills]);
+  const openBillsCount = useMemo(
+    () => bills.filter(b => b.status !== 'paid' || !b.closedAt).length,
+    [bills]
+  );
   const paidBillsCount = useMemo(() => bills.filter(b => b.status === 'paid').length, [bills]);
 
   // Open Payment Modal
@@ -387,6 +397,7 @@ export const CounterConsole: React.FC<CounterConsoleProps> = ({
                 filteredBills.map(bill => {
                   const isSelected = bill.id === currentBill?.id;
                   const isPaid = bill.status === 'paid';
+                  const needsSessionClose = isPaid && !bill.closedAt && bill.tableId !== 'TAKEAWAY';
 
                   return (
                     <button
@@ -397,10 +408,10 @@ export const CounterConsole: React.FC<CounterConsoleProps> = ({
                         setActionError(null);
                         setMobilePanel('invoice');
                       }}
-                      className={`w-full min-h-[72px] text-left px-4 py-3.5 transition-colors flex items-center justify-between gap-3 cursor-pointer border-l-4 ${
+                      className={`w-full min-h-[72px] text-left px-4 py-3.5 transition-colors flex items-center justify-between gap-3 cursor-pointer ${
                         isSelected
-                          ? 'bg-teal-50/70 border-l-teal-700'
-                          : 'border-l-transparent hover:bg-stone-50'
+                          ? 'bg-teal-50/80 ring-1 ring-inset ring-teal-700/25'
+                          : 'hover:bg-stone-50'
                       }`}
                     >
                       <div className="space-y-1 min-w-0">
@@ -410,10 +421,14 @@ export const CounterConsole: React.FC<CounterConsoleProps> = ({
                           </span>
                           <span
                             className={`text-[11px] font-semibold ${
-                              isPaid ? 'text-emerald-700' : 'text-amber-800'
+                              needsSessionClose
+                                ? 'text-teal-800'
+                                : isPaid
+                                ? 'text-emerald-700'
+                                : 'text-amber-800'
                             }`}
                           >
-                            · {isPaid ? 'Settled' : 'Open'}
+                            · {needsSessionClose ? 'Paid · Close Table' : isPaid ? 'Settled' : 'Open'}
                           </span>
                         </div>
                         <div className="text-xs text-stone-500 font-mono tabular-nums truncate">
@@ -776,7 +791,7 @@ export const CounterConsole: React.FC<CounterConsoleProps> = ({
                         <CreditCard className="w-4 h-4" />
                         <span>Record Payment (Nu. {currentBill.balanceDue})</span>
                       </button>
-                    ) : currentBill.status !== 'paid' ? (
+                    ) : !currentBill.closedAt && currentBill.tableId !== 'TAKEAWAY' ? (
                       <button
                         type="button"
                         disabled={isSubmittingAction}
@@ -784,7 +799,7 @@ export const CounterConsole: React.FC<CounterConsoleProps> = ({
                         className="min-h-[48px] px-6 py-3 bg-teal-700 hover:bg-teal-800 text-white font-bold text-sm rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
                       >
                         <CheckCircle2 className="w-4 h-4" />
-                        <span>Close Table Session &amp; Settle</span>
+                        <span>Close Table Session</span>
                       </button>
                     ) : (
                       <div className="inline-flex items-center gap-2 text-xs sm:text-sm font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-4 py-2.5 rounded-xl">
@@ -1259,15 +1274,22 @@ export const CounterConsole: React.FC<CounterConsoleProps> = ({
 
               {/* Items */}
               <div className="space-y-1.5 border-b border-dashed border-stone-300 pb-3">
-                {currentBillRounds.flatMap(r => r.items).map((item, idx) => {
-                  if (item.kitchenStatus === 'cannot_prepare') return null;
-                  return (
-                    <div key={idx} className="flex justify-between text-[11px] gap-2">
-                      <span>{item.quantity}x {item.name}</span>
-                      <span className="shrink-0">Nu. {item.unitPrice * item.quantity}</span>
-                    </div>
-                  );
-                })}
+                {currentBillRounds
+                  .filter(r => r.status !== 'cancelled')
+                  .flatMap(r => r.items)
+                  .map((item, idx) => {
+                    if (item.kitchenStatus === 'cannot_prepare') return null;
+                    return (
+                      <div key={idx} className="flex justify-between text-[11px] gap-2">
+                        <span>
+                          {item.quantity}x {item.name}
+                        </span>
+                        <span className="shrink-0">
+                          Nu. {Math.round(item.unitPrice * item.quantity * 100) / 100}
+                        </span>
+                      </div>
+                    );
+                  })}
               </div>
 
               {/* Calculations */}

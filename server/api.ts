@@ -430,7 +430,7 @@ apiRouter.post('/orders', guestOrderLimiter, (req: Request, res: Response) => {
       // Returned ONLY once to the placing anonymous client so their device can privately track their own order
       trackingToken: result.order.trackingToken,
       bill: staff ? result.bill : sanitizeBillForGuest(result.bill),
-      message: `Anonymous order ${result.order.orderNumber} confirmed!`
+      message: `Order ${result.order.orderNumber} confirmed!`
     });
   } catch (err: any) {
     const status = err.statusCode === 403 ? 403 : 400;
@@ -704,9 +704,9 @@ apiRouter.get('/counter/bills', requireRole(['cashier', 'manager', 'admin']), (r
   const tables = db.getTables().map(sanitizeTableForGuest);
   const allOrders = db.getAllOrderRounds();
 
-  // Counter Staff (cashier) only receives open/unsettled bills & active rounds; Complete Order History is GM & Admin only
+  // Counter Staff (cashier) only receives active bills (open or paid dine-in awaiting table session close); Complete Order History is GM & Admin only
   if (req.staff?.role === 'cashier') {
-    const activeBills = allBills.filter(b => b.status !== 'paid' && b.status !== 'voided');
+    const activeBills = allBills.filter(b => b.status !== 'voided' && (b.status !== 'paid' || !b.closedAt));
     const activeRoundIds = new Set(activeBills.flatMap(b => b.orderRoundIds));
     const activeOrders = allOrders.filter(o => activeRoundIds.has(o.id)).map(sanitizeOrderForGuest);
     return res.json({
@@ -728,7 +728,7 @@ apiRouter.get('/counter/bills/:id', requireRole(['cashier', 'manager', 'admin'])
   if (!bill) {
     return res.status(404).json({ error: 'Bill not found' });
   }
-  if (req.staff?.role === 'cashier' && (bill.status === 'paid' || bill.status === 'voided')) {
+  if (req.staff?.role === 'cashier' && (bill.status === 'voided' || (bill.status === 'paid' && Boolean(bill.closedAt)))) {
     return res.status(403).json({
       error: 'Forbidden: Settled historical bills and order archives are restricted to GM (General Manager) and Admin.'
     });
@@ -828,13 +828,15 @@ apiRouter.post('/counter/sessions/:sessionId/close', requireRole(['cashier', 'ma
   try {
     const staffName = req.staff?.name || 'Cashier';
     const closedSession = db.closeDiningSession(req.params.sessionId, staffName);
+    const closedBill = db.getBillBySessionId(req.params.sessionId);
 
     sseHub.broadcastToTableAndStaff(
       closedSession.tableId,
       'table_closed',
       {
         sessionId: req.params.sessionId,
-        tableId: closedSession.tableId
+        tableId: closedSession.tableId,
+        bill: closedBill
       },
       {
         tableId: closedSession.tableId
@@ -844,6 +846,7 @@ apiRouter.post('/counter/sessions/:sessionId/close', requireRole(['cashier', 'ma
     res.json({
       success: true,
       session: closedSession,
+      bill: closedBill,
       message: `Table ${closedSession.tableNumber} session closed successfully!`
     });
   } catch (err: any) {

@@ -88,6 +88,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
   const [modalQuantity, setModalQuantity] = useState(1);
   const [modalSelectedOptions, setModalSelectedOptions] = useState<Record<string, string[]>>({});
   const [modalSpecialInstructions, setModalSpecialInstructions] = useState('');
+  const [modalError, setModalError] = useState<string | null>(null);
 
   // Submission & Confirmation state
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -98,6 +99,8 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
   const [submittedOrder, setSubmittedOrder] = useState<OrderRound | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [copiedConfirmation, setCopiedConfirmation] = useState(false);
+
+  const roundCurrency = (val: number) => Math.round(val * 100) / 100;
 
   // Mint a fresh idempotency seed ONLY when cart items/quantities or preparation note change
   const cartFingerprint = useMemo(
@@ -117,6 +120,18 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
   useEffect(() => {
     setCartAttemptSeed(`${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
   }, [cartFingerprint]);
+
+  const unavailableCartItemIds = useMemo(() => {
+    if (menuItems.length === 0) return new Set<string>();
+    const unavailable = new Set<string>();
+    for (const cartItem of cart) {
+      const liveItem = menuItems.find(m => m.id === cartItem.menuItemId);
+      if (!liveItem || !liveItem.isAvailable || liveItem.soldOut) {
+        unavailable.add(cartItem.cartItemId);
+      }
+    }
+    return unavailable;
+  }, [cart, menuItems]);
 
   const hasUnverifiedTableAttempt = Boolean(attemptedTableId && !isTableTokenValidated);
   const canPlaceOrder = Boolean(settings.allowGuestOrdering && !hasUnverifiedTableAttempt);
@@ -148,7 +163,10 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
       if (selectedCategory !== 'all' && item.categoryId !== selectedCategory) {
         return false;
       }
-      if (dietFilter !== 'all' && item.dietType !== dietFilter) {
+      if (dietFilter === 'veg' && item.dietType !== 'veg' && item.dietType !== 'vegan') {
+        return false;
+      }
+      if (dietFilter === 'non-veg' && item.dietType !== 'non-veg' && item.dietType !== 'egg') {
         return false;
       }
       if (searchQuery.trim()) {
@@ -174,6 +192,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
     setItemToCustomize(item);
     setModalQuantity(1);
     setModalSpecialInstructions('');
+    setModalError(null);
 
     const defaults: Record<string, string[]> = {};
     item.customizationGroups.forEach(grp => {
@@ -196,11 +215,19 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
         if (opt) price += opt.priceModifier;
       });
     });
-    return Math.max(0, price);
+    return roundCurrency(Math.max(0, price));
   }, [itemToCustomize, modalSelectedOptions]);
 
   const handleAddToCart = () => {
     if (!itemToCustomize) return;
+
+    const missingRequiredGroup = itemToCustomize.customizationGroups.find(
+      grp => grp.required && (modalSelectedOptions[grp.id] || []).length === 0
+    );
+    if (missingRequiredGroup) {
+      setModalError(`Please choose an option for "${missingRequiredGroup.name}".`);
+      return;
+    }
 
     const selections: SelectedCustomization[] = [];
     itemToCustomize.customizationGroups.forEach(grp => {
@@ -219,20 +246,49 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
       });
     });
 
-    const newCartItem: CartItem = {
-      cartItemId: `ci_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
-      menuItemId: itemToCustomize.id,
-      name: itemToCustomize.name,
-      basePrice: itemToCustomize.price,
-      unitPrice: modalUnitPrice,
-      quantity: modalQuantity,
-      dietType: itemToCustomize.dietType,
-      customizations: selections,
-      specialInstructions: modalSpecialInstructions.trim() || undefined,
-      imageUrl: itemToCustomize.imageUrl
-    };
+    const normalizedNote = modalSpecialInstructions.trim() || undefined;
+    const selectionSignature = selections
+      .map(s => `${s.groupId}:${s.optionId}`)
+      .sort()
+      .join('|');
 
-    setCart(prev => [...prev, newCartItem]);
+    setCart(prev => {
+      const existingIndex = prev.findIndex(existing => {
+        if (existing.menuItemId !== itemToCustomize.id) return false;
+        if ((existing.specialInstructions || '') !== (normalizedNote || '')) return false;
+        const existingSig = existing.customizations
+          .map(s => `${s.groupId}:${s.optionId}`)
+          .sort()
+          .join('|');
+        return existingSig === selectionSignature;
+      });
+
+      if (existingIndex >= 0) {
+        const copy = [...prev];
+        copy[existingIndex] = {
+          ...copy[existingIndex],
+          unitPrice: modalUnitPrice,
+          quantity: Math.min(99, copy[existingIndex].quantity + modalQuantity)
+        };
+        return copy;
+      }
+
+      const newCartItem: CartItem = {
+        cartItemId: `ci_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+        menuItemId: itemToCustomize.id,
+        name: itemToCustomize.name,
+        basePrice: itemToCustomize.price,
+        unitPrice: modalUnitPrice,
+        quantity: Math.min(99, Math.max(1, modalQuantity)),
+        dietType: itemToCustomize.dietType,
+        customizations: selections,
+        specialInstructions: normalizedNote,
+        imageUrl: itemToCustomize.imageUrl
+      };
+      return [...prev, newCartItem];
+    });
+
+    setModalError(null);
     setItemToCustomize(null);
     setSubmitError(null);
     setIsCartOpen(true);
@@ -243,7 +299,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
       return prev
         .map(item => {
           if (item.cartItemId === cartItemId) {
-            const newQty = item.quantity + delta;
+            const newQty = Math.min(99, item.quantity + delta);
             return newQty > 0 ? { ...item, quantity: newQty } : null;
           }
           return item;
@@ -257,7 +313,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
   };
 
   const cartSubtotal = useMemo(() => {
-    return cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+    return roundCurrency(cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0));
   }, [cart]);
 
   const serviceCharge = Math.round(cartSubtotal * settings.serviceChargeRate * 100) / 100;
@@ -272,6 +328,12 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
         hasUnverifiedTableAttempt
           ? 'Please scan the QR code on your table, or switch to Counter Pickup.'
           : 'Online ordering is temporarily paused. Please place your order at the counter.'
+      );
+      return;
+    }
+    if (unavailableCartItemIds.size > 0) {
+      setSubmitError(
+        'One or more items in your cart are now sold out. Please remove sold-out items before placing your order.'
       );
       return;
     }
@@ -728,6 +790,8 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                               ? 'Pure Veg'
                               : item.dietType === 'vegan'
                               ? 'Vegan'
+                              : item.dietType === 'egg'
+                              ? 'Contains Egg'
                               : 'Non-Veg'}
                           </span>
                           <span aria-hidden="true">·</span>
@@ -891,7 +955,13 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                       {grp.name}
                     </span>
                     <span className="text-xs text-stone-500">
-                      {grp.type === 'single' ? 'Choose 1' : 'Optional extras'}
+                      {grp.type === 'single'
+                        ? grp.required
+                          ? 'Choose 1 · Required'
+                          : 'Choose 1'
+                        : grp.required
+                        ? 'Select at least 1 · Required'
+                        : 'Optional extras'}
                     </span>
                   </div>
 
@@ -904,6 +974,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                           key={opt.id}
                           type="button"
                           onClick={() => {
+                            setModalError(null);
                             if (grp.type === 'single') {
                               setModalSelectedOptions(prev => ({ ...prev, [grp.id]: [opt.id] }));
                             } else {
@@ -949,6 +1020,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                 <input
                   id="item-special-instructions"
                   type="text"
+                  maxLength={300}
                   placeholder="e.g. Chili on the side, less salt, extra hot..."
                   value={modalSpecialInstructions}
                   onChange={e => setModalSpecialInstructions(e.target.value)}
@@ -956,13 +1028,24 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                 />
               </div>
 
+              {modalError && (
+                <div
+                  role="alert"
+                  className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl flex items-center gap-2"
+                >
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{modalError}</span>
+                </div>
+              )}
+
               <div className="border-t border-stone-100 pt-4 flex items-center justify-between">
                 <span className="text-xs sm:text-sm font-bold text-stone-800">Quantity</span>
                 <div className="flex items-center gap-3 bg-stone-100 p-1 rounded-xl">
                   <button
                     type="button"
+                    disabled={modalQuantity <= 1}
                     onClick={() => setModalQuantity(q => Math.max(1, q - 1))}
-                    className="w-10 h-10 rounded-lg bg-white text-stone-700 hover:bg-stone-200 flex items-center justify-center transition-colors cursor-pointer"
+                    className="w-10 h-10 rounded-lg bg-white text-stone-700 hover:bg-stone-200 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors cursor-pointer"
                     aria-label="Decrease quantity"
                   >
                     <Minus className="w-4 h-4" />
@@ -972,8 +1055,9 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                   </span>
                   <button
                     type="button"
-                    onClick={() => setModalQuantity(q => q + 1)}
-                    className="w-10 h-10 rounded-lg bg-white text-stone-700 hover:bg-stone-200 flex items-center justify-center transition-colors cursor-pointer"
+                    disabled={modalQuantity >= 99}
+                    onClick={() => setModalQuantity(q => Math.min(99, q + 1))}
+                    className="w-10 h-10 rounded-lg bg-white text-stone-700 hover:bg-stone-200 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors cursor-pointer"
                     aria-label="Increase quantity"
                   >
                     <Plus className="w-4 h-4" />
@@ -988,7 +1072,7 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
                   <>
                     <div className="text-xs text-stone-500">Item Total</div>
                     <div className="text-base font-extrabold text-stone-900 font-mono tabular-nums">
-                      Nu. {modalUnitPrice * modalQuantity}
+                      Nu. {roundCurrency(modalUnitPrice * modalQuantity)}
                     </div>
                   </>
                 ) : (
@@ -1042,82 +1126,100 @@ export const CustomerMenu: React.FC<CustomerMenuProps> = ({
             {/* Itemized Cart List */}
             <div className="p-4 sm:p-5 flex-1 overflow-y-auto space-y-5">
               <div className="divide-y divide-stone-200">
-                {cart.map(item => (
-                  <div
-                    key={item.cartItemId}
-                    className="py-4 first:pt-0 last:pb-0 space-y-2.5"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="space-y-0.5">
-                        <h4 className="text-sm font-bold text-stone-900">{item.name}</h4>
+                {cart.map(item => {
+                  const isNowUnavailable = unavailableCartItemIds.has(item.cartItemId);
+                  return (
+                    <div
+                      key={item.cartItemId}
+                      className="py-4 first:pt-0 last:pb-0 space-y-2.5"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-0.5">
+                          <h4
+                            className={`text-sm font-bold ${
+                              isNowUnavailable ? 'line-through text-stone-400' : 'text-stone-900'
+                            }`}
+                          >
+                            {item.name}
+                          </h4>
+                          {settings.showPricesOnCustomerMenu && (
+                            <div className="text-xs text-stone-500 font-mono tabular-nums">
+                              Nu. {item.unitPrice} each
+                            </div>
+                          )}
+                        </div>
                         {settings.showPricesOnCustomerMenu && (
-                          <div className="text-xs text-stone-500 font-mono tabular-nums">
-                            Nu. {item.unitPrice} each
+                          <div className="text-sm font-bold text-stone-900 font-mono tabular-nums shrink-0">
+                            Nu. {roundCurrency(item.unitPrice * item.quantity)}
                           </div>
                         )}
                       </div>
-                      {settings.showPricesOnCustomerMenu && (
-                        <div className="text-sm font-bold text-stone-900 font-mono tabular-nums shrink-0">
-                          Nu. {item.unitPrice * item.quantity}
+
+                      {isNowUnavailable && (
+                        <div className="text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 px-2.5 py-1.5 rounded-lg">
+                          Currently sold out — please remove this item to place your order.
                         </div>
                       )}
-                    </div>
 
-                    {item.customizations.length > 0 && (
-                      <div className="text-xs text-stone-600 space-y-0.5">
-                        {item.customizations.map(c => (
-                          <div key={c.optionId} className="flex justify-between gap-2">
-                            <span>
-                              {c.groupName}: {c.optionName}
-                            </span>
-                            {settings.showPricesOnCustomerMenu && c.priceModifier > 0 && (
-                              <span className="font-mono tabular-nums text-stone-500">
-                                +Nu. {c.priceModifier}
+                      {item.customizations.length > 0 && (
+                        <div className="text-xs text-stone-600 space-y-0.5">
+                          {item.customizations.map(c => (
+                            <div key={`${c.groupId}:${c.optionId}`} className="flex justify-between gap-2">
+                              <span>
+                                {c.groupName}: {c.optionName}
                               </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                              {settings.showPricesOnCustomerMenu && c.priceModifier !== 0 && (
+                                <span className="font-mono tabular-nums text-stone-500">
+                                  {c.priceModifier > 0
+                                    ? `+Nu. ${c.priceModifier}`
+                                    : `-Nu. ${Math.abs(c.priceModifier)}`}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
-                    {item.specialInstructions && (
-                      <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200/80 px-2.5 py-1.5 rounded-lg">
-                        Note: {item.specialInstructions}
-                      </div>
-                    )}
+                      {item.specialInstructions && (
+                        <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200/80 px-2.5 py-1.5 rounded-lg">
+                          Note: {item.specialInstructions}
+                        </div>
+                      )}
 
-                    <div className="flex items-center justify-between pt-1">
-                      <button
-                        type="button"
-                        onClick={() => removeCartItem(item.cartItemId)}
-                        className="min-h-[38px] px-2 text-xs text-rose-700 hover:text-rose-900 font-semibold cursor-pointer"
-                      >
-                        Remove
-                      </button>
-                      <div className="flex items-center gap-2 bg-stone-100 p-1 rounded-xl">
+                      <div className="flex items-center justify-between pt-1">
                         <button
                           type="button"
-                          onClick={() => updateCartQuantity(item.cartItemId, -1)}
-                          className="w-9 h-9 rounded-lg bg-white flex items-center justify-center text-stone-700 hover:bg-stone-200 transition-colors cursor-pointer"
-                          aria-label={`Decrease quantity of ${item.name}`}
+                          onClick={() => removeCartItem(item.cartItemId)}
+                          className="min-h-[38px] px-2 text-xs text-rose-700 hover:text-rose-900 font-semibold cursor-pointer"
                         >
-                          <Minus className="w-3.5 h-3.5" />
+                          Remove
                         </button>
-                        <span className="text-xs sm:text-sm font-bold w-6 text-center font-mono tabular-nums">
-                          {item.quantity}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => updateCartQuantity(item.cartItemId, 1)}
-                          className="w-9 h-9 rounded-lg bg-white flex items-center justify-center text-stone-700 hover:bg-stone-200 transition-colors cursor-pointer"
-                          aria-label={`Increase quantity of ${item.name}`}
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center gap-2 bg-stone-100 p-1 rounded-xl">
+                          <button
+                            type="button"
+                            onClick={() => updateCartQuantity(item.cartItemId, -1)}
+                            className="w-9 h-9 rounded-lg bg-white flex items-center justify-center text-stone-700 hover:bg-stone-200 transition-colors cursor-pointer"
+                            aria-label={`Decrease quantity of ${item.name}`}
+                          >
+                            <Minus className="w-3.5 h-3.5" />
+                          </button>
+                          <span className="text-xs sm:text-sm font-bold w-6 text-center font-mono tabular-nums">
+                            {item.quantity}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={item.quantity >= 99}
+                            onClick={() => updateCartQuantity(item.cartItemId, 1)}
+                            className="w-9 h-9 rounded-lg bg-white flex items-center justify-center text-stone-700 hover:bg-stone-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                            aria-label={`Increase quantity of ${item.name}`}
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               {/* Optional Order Note */}

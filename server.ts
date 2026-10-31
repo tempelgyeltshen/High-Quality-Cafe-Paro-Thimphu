@@ -1,16 +1,18 @@
 import express from 'express';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { apiRouter } from './server/api.ts';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
+  const httpServer = http.createServer(app);
   const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
   const isProd = process.env.NODE_ENV === 'production';
 
@@ -53,20 +55,37 @@ async function startServer() {
   app.use('/api', apiRouter);
 
   if (!isProd) {
-    // Development mode with Vite dev middleware
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        host: '0.0.0.0',
-        port: 3000,
-        hmr: process.env.DISABLE_HMR !== 'true',
-        watch: process.env.DISABLE_HMR === 'true' ? null : {},
-      },
-      appType: 'spa',
+    // Initialize Vite dev middleware asynchronously so port 3000 binds immediately
+    let viteMiddleware: express.RequestHandler | null = null;
+    const viteReady = (async () => {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: {
+          middlewareMode: true,
+          hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+          watch: process.env.DISABLE_HMR === 'true' ? null : {},
+        },
+        appType: 'spa',
+      });
+      viteMiddleware = vite.middlewares;
+      return vite;
+    })();
+
+    viteReady.catch(err => {
+      console.error('Failed to initialize Vite dev middleware:', err);
+      process.exit(1);
     });
 
-    app.use(vite.middlewares);
+    app.use(async (req, res, next) => {
+      try {
+        if (!viteMiddleware) {
+          await viteReady;
+        }
+        viteMiddleware!(req, res, next);
+      } catch (err) {
+        next(err);
+      }
+    });
   } else {
     // Production mode
     const distPath = path.resolve(__dirname, 'dist');
@@ -81,7 +100,12 @@ async function startServer() {
     });
   }
 
-  app.listen(port, '0.0.0.0', () => {
+  httpServer.on('error', err => {
+    console.error('HTTP server error:', err);
+    process.exit(1);
+  });
+
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`High Quality Cafe Server (${isProd ? 'production' : 'development'}) running at http://0.0.0.0:${port}`);
   });
 }
